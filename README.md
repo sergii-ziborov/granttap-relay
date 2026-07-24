@@ -9,6 +9,10 @@ and temporarily queues encrypted envelopes while a paired device is offline.
 Production health endpoint:
 [granttap-relay.sergii-ziborov.workers.dev/health](https://granttap-relay.sergii-ziborov.workers.dev/health)
 
+| Sessions on iPhone | Visible activity on Apple Watch |
+| --- | --- |
+| ![GrantTap sessions on iPhone](docs/images/phone-sessions.png) | ![GrantTap activity on Apple Watch](docs/images/watch-activity.png) |
+
 ## What the relay can and cannot see
 
 The relay can see routing metadata: room, sender/recipient roles, IP addresses,
@@ -85,6 +89,9 @@ existing `v1` migration.
 ## Related
 
 - MCP bridge: [sergii-ziborov/granttap-mcp](https://github.com/sergii-ziborov/granttap-mcp)
+- npm package: [granttap-mcp](https://www.npmjs.com/package/granttap-mcp)
 - Product: [granttap.com](https://granttap.com)
+- Privacy: [granttap.com/privacy](https://granttap.com/privacy)
+- Support: [granttap.com/support](https://granttap.com/support)
 
 GrantTap is not affiliated with Anthropic, OpenAI, Apple, or Cloudflare.

@@ -16,5 +16,13 @@
   "engines": {
     "node": ">=20"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sergii-ziborov/granttap-relay.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sergii-ziborov/granttap-relay/issues"
+  },
+  "homepage": "https://granttap.com",
   "license": "MIT"
 }

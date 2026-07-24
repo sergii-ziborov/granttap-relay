@@ -93,5 +93,6 @@ existing `v1` migration.
 - Product: [granttap.com](https://granttap.com)
 - Privacy: [granttap.com/privacy](https://granttap.com/privacy)
 - Support: [granttap.com/support](https://granttap.com/support)
+- Security policy: [SECURITY.md](SECURITY.md)
 
 GrantTap is not affiliated with Anthropic, OpenAI, Apple, or Cloudflare.

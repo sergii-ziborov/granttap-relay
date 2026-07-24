@@ -3,3 +3,22 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# Local configuration and Cloudflare development secrets.
+# Keep the example files commit-safe; every real value stays outside git.
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Credentials and signing material must never enter this repository.
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+credentials.json
+service-account*.json

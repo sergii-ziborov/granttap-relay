@@ -56,8 +56,26 @@ npx wrangler login
 npm run deploy
 ```
 
-No application secret is required. After deployment, use the emitted secure
-WebSocket URL as the relay URL in your GrantTap pairing.
+The current relay requires **no application secrets or environment variables**.
+After deployment, use the emitted secure WebSocket URL as the relay URL in your
+GrantTap pairing.
+
+If a future feature needs a secret, never put it in `wrangler.toml`, `.env`, a
+GitHub Actions variable, or a committed `.dev.vars` file. Store production
+values in Cloudflare's encrypted secret store:
+
+```bash
+npx wrangler secret put SECRET_NAME
+```
+
+For local development, copy `.dev.vars.example` to `.dev.vars`. Git ignores
+`.dev.vars`, every `.env*` file except the empty example, private keys,
+certificates, and common credential files.
+
+GitHub secret scanning and push protection are enabled for this repository.
+Report a suspected leak privately through the repository's
+[Security advisories](https://github.com/sergii-ziborov/granttap-relay/security/advisories/new)
+instead of opening a public issue.
 
 The checked-in `wrangler.toml` uses the worker name `granttap-relay`. Change
 the name if that worker name already exists in your account. If you alter

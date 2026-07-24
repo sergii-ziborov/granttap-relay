@@ -1,0 +1,8 @@
+# GrantTap Relay currently requires no local secrets.
+#
+# If a future feature needs one:
+#   1. copy this file to .dev.vars
+#   2. add NAME=value only to .dev.vars
+#   3. run `npx wrangler secret put NAME` for production
+#
+# Never add a real value to this example file.

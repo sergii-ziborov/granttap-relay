@@ -10,6 +10,9 @@ name = "granttap-relay"
 main = "src/worker.js"
 compatibility_date = "2026-07-01"
 
+# This worker currently needs no environment variables.
+# Never commit secrets under [vars]; use `wrangler secret put NAME`.
+
 [[durable_objects.bindings]]
 name = "ROOM"
 class_name = "GrantTapRoom"

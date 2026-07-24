@@ -1,0 +1,23 @@
+# GrantTap relay — Cloudflare Workers + Durable Objects.
+#
+#   локально:  npx wrangler dev            (никакого логина не нужно)
+#   в облако:  npx wrangler login && npx wrangler deploy
+#
+# После деплоя адрес relay для `granttap connect` и приложения:
+#   wss://granttap-relay.<your-subdomain>.workers.dev
+
+name = "granttap-relay"
+main = "src/worker.js"
+compatibility_date = "2026-07-01"
+
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "GrantTapRoom"
+
+[[durable_objects.bindings]]
+name = "CODES"
+class_name = "GrantTapCodes"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GrantTapRoom", "GrantTapCodes"]

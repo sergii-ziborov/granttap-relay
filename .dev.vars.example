@@ -1,8 +1,5 @@
-# GrantTap Relay currently requires no local secrets.
-#
-# If a future feature needs one:
-#   1. copy this file to .dev.vars
-#   2. add NAME=value only to .dev.vars
-#   3. run `npx wrangler secret put NAME` for production
-#
-# Never add a real value to this example file.
+# Copy this file to .dev.vars only when testing APNs locally. Never commit the
+# copy or a real key. Production values belong in Cloudflare encrypted secrets.
+APNS_TEAM_ID="APPLE_TEAM_ID"
+APNS_KEY_ID="APPLE_KEY_ID"
+APNS_PRIVATE_KEY="PASTE_COMPLETE_P8_CONTENT_HERE"

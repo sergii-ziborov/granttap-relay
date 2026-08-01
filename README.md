@@ -16,8 +16,10 @@ Production health endpoint:
 ## What the relay can and cannot see
 
 The relay can see routing metadata: room, sender/recipient roles, IP addresses,
-timing, expiry, and message sizes. It receives `nonce` and `box` as opaque
-ciphertext.
+timing, expiry, message sizes, and—when background delivery is enabled—an APNs
+device token plus its sandbox/production environment. It receives `nonce` and
+`box` as opaque ciphertext. Push alerts contain no command, prompt, path,
+session title, or message text.
 
 The relay cannot decrypt commands, questions, agent messages, user replies, or
 approval decisions. Device secret keys are created locally and never sent to
@@ -35,8 +37,20 @@ boundary can be audited instead of trusted as a marketing claim.
 | `wss://host/?room=<room>` | Hibernating WebSocket for one pairing room |
 | `PUT /pair/<CODE>` | Park an already encrypted short-code pairing blob |
 | `GET /pair/<CODE>` | Consume that blob once |
+| `PUT /push/register?room=<room>` | Register an APNs token with the room credential |
+| `DELETE /push/register?room=<room>` | Remove that APNs token |
+| `GET /push/status?room=<room>` | Report provider configuration and registered device count |
 
-Queued messages are capped per recipient and expired before delivery.
+Queued messages are capped per recipient and expired before delivery. New
+clients attach an opaque delivery id; the relay retains that ciphertext until
+the receiving client confirms that it decrypted the envelope. The queue does
+not treat a WebSocket write as proof of delivery.
+
+The APNs alert is deliberately generic. It wakes the iPhone so the app can pull
+the queued E2EE envelope; approval alerts also carry only the random request id
+needed by the registered notification actions. Apple does not guarantee
+background execution timing, so the visible generic alert is the fallback—not
+a promise of instant silent delivery.
 
 ## Run locally
 
@@ -60,17 +74,23 @@ npx wrangler login
 npm run deploy
 ```
 
-The current relay requires **no application secrets or environment variables**.
-After deployment, use the emitted secure WebSocket URL as the relay URL in your
-GrantTap pairing.
-
-If a future feature needs a secret, never put it in `wrangler.toml`, `.env`, a
-GitHub Actions variable, or a committed `.dev.vars` file. Store production
-values in Cloudflare's encrypted secret store:
+WebSocket relay and offline queues work without application secrets. Background
+APNs delivery requires an Apple Push Notification authentication key. Store the
+following as encrypted Cloudflare Worker secrets:
 
 ```bash
-npx wrangler secret put SECRET_NAME
+npx wrangler secret put APNS_TEAM_ID
+npx wrangler secret put APNS_KEY_ID
+npx wrangler secret put APNS_PRIVATE_KEY
 ```
+
+`APNS_PRIVATE_KEY` is the complete `.p8` content. After deployment, use the
+emitted secure WebSocket URL as the relay URL in your GrantTap pairing. Without
+all three secrets, `/push/status` honestly reports `enabled: false`; foreground
+WebSocket delivery and durable queues keep working.
+
+Never put APNs credentials in `wrangler.toml`, `.env`, a GitHub Actions
+variable, or a committed `.dev.vars` file.
 
 For local development, copy `.dev.vars.example` to `.dev.vars`. Git ignores
 `.dev.vars`, every `.env*` file except the empty example, private keys,

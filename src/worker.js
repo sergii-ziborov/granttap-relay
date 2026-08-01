@@ -20,6 +20,11 @@ const HOLD_LIMIT = 100;
 const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 const MAX_ATTEMPT_SOURCES = 1000;
 const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
+const PUSH_TOKEN_LIMIT = 8;
+const PUSH_AUTH_KEY = "push:auth-sha256";
+const PUSH_TOKENS_KEY = "push:tokens";
+
+let cachedProviderToken = null;
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -41,6 +46,13 @@ export default {
       return stub.fetch(request);
     }
 
+    if (url.pathname === "/push/register" || url.pathname === "/push/status") {
+      const room = url.searchParams.get("room");
+      if (!room) return json({ error: "room query parameter required" }, 400);
+      const stub = env.ROOM.get(env.ROOM.idFromName(room));
+      return stub.fetch(request);
+    }
+
     if ((request.headers.get("Upgrade") ?? "").toLowerCase() === "websocket") {
       const room = url.searchParams.get("room");
       if (!room) return json({ error: "room query parameter required" }, 400);
@@ -55,17 +67,29 @@ export default {
 // ------------------------------------------------------------------ the room
 
 export class GrantTapRoom {
-  constructor(state) {
+  constructor(state, env) {
     this.state = state;
+    this.env = env;
   }
 
   async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === "/push/register") return this.handlePushRegistration(request);
+    if (url.pathname === "/push/status") return this.handlePushStatus(request);
     if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
       return json({ error: "expected websocket" }, 426);
     }
     const pair = new WebSocketPair();
-    const room = new URL(request.url).searchParams.get("room");
+    const room = url.searchParams.get("room");
     if (!room) return json({ error: "room query parameter required" }, 400);
+    const auth = bearer(request);
+    const expectedAuth = await this.state.storage.get(PUSH_AUTH_KEY);
+    if (expectedAuth && (!auth || await sha256(auth) !== expectedAuth)) {
+      return json({ error: "invalid room credential" }, 401);
+    }
+    // New pairings carry a relay-only random credential. The first authenticated
+    // socket pins its hash; the E2EE payload keys remain unknown to the relay.
+    if (!expectedAuth && auth) await this.state.storage.put(PUSH_AUTH_KEY, await sha256(auth));
     // Hibernation API: the DO can be evicted while sockets stay open.
     this.state.acceptWebSocket(pair[1]);
     pair[1].serializeAttachment({ room });
@@ -78,6 +102,11 @@ export class GrantTapRoom {
     try {
       env = JSON.parse(raw);
     } catch {
+      return;
+    }
+    if (env?.type === "relay.ack" && typeof env.deliveryId === "string") {
+      const known = ws.deserializeAttachment() ?? {};
+      if (known.role) await this.acknowledge(known.role, env.deliveryId);
       return;
     }
     if (!env || typeof env !== "object" || !env.room || !env.from || !env.to) return;
@@ -100,14 +129,10 @@ export class GrantTapRoom {
         return env.to === "all" || att?.role === env.to;
       });
 
-    if (targets.length === 0 && env.to !== "all") {
-      // Nobody home for that role — park it durably and deliver on connect.
-      const key = `q:${env.to}`;
-      const q = (await this.state.storage.get(key)) ?? [];
-      q.push({ raw, expiresAt: env.expiresAt ?? Date.now() + DEFAULT_QUEUE_TTL_MS });
-      if (q.length > HOLD_LIMIT) q.shift();
-      await this.state.storage.put(key, q);
-      return;
+    if (env.to !== "all" && (targets.length === 0 || env.deliveryId)) {
+      // Reliable envelopes stay queued until the recipient confirms successful
+      // decryption. Legacy envelopes keep the previous send-or-queue behavior.
+      await this.queue(env.to, raw, env.deliveryId, env.expiresAt);
     }
 
     for (const t of targets) {
@@ -117,6 +142,28 @@ export class GrantTapRoom {
         /* stale socket; hibernation will reap it */
       }
     }
+    if (env.to === "phone" && env.wake) {
+      await this.sendWakePush(env.wake, env.deliveryId).catch(() => {});
+    }
+  }
+
+  async queue(role, raw, deliveryId, expiresAt) {
+    const key = `q:${role}`;
+    const now = Date.now();
+    const q = ((await this.state.storage.get(key)) ?? [])
+      .filter((item) => (item.expiresAt ?? now + DEFAULT_QUEUE_TTL_MS) > now);
+    if (deliveryId && q.some((item) => item.deliveryId === deliveryId)) return;
+    q.push({ raw, deliveryId, expiresAt: expiresAt ?? now + DEFAULT_QUEUE_TTL_MS });
+    if (q.length > HOLD_LIMIT) q.splice(0, q.length - HOLD_LIMIT);
+    await this.state.storage.put(key, q);
+  }
+
+  async acknowledge(role, deliveryId) {
+    const key = `q:${role}`;
+    const q = (await this.state.storage.get(key)) ?? [];
+    const remaining = q.filter((item) => item.deliveryId !== deliveryId);
+    if (remaining.length) await this.state.storage.put(key, remaining);
+    else await this.state.storage.delete(key);
   }
 
   async flushTo(role, ws) {
@@ -128,24 +175,179 @@ export class GrantTapRoom {
       const expiresAt = typeof item === "string" ? now + DEFAULT_QUEUE_TTL_MS : item.expiresAt;
       return expiresAt > now;
     });
-    let sent = 0;
+    const remaining = [];
     for (const item of pending) {
       const raw = typeof item === "string" ? item : item.raw;
-      if (!raw) { sent++; continue; }
+      if (!raw) continue;
       try {
         ws.send(raw);
-        sent++;
+        // A delivery id requires an explicit decrypt acknowledgement. Legacy
+        // queued items are removed after the successful socket send.
+        if (typeof item !== "string" && item.deliveryId) remaining.push(item);
       } catch {
+        remaining.push(item);
         break;
       }
     }
-    const remaining = pending.slice(sent);
     if (remaining.length) await this.state.storage.put(key, remaining);
     else await this.state.storage.delete(key);
   }
 
+  async handlePushRegistration(request) {
+    const auth = bearer(request);
+    if (!auth) return json({ error: "room credential required" }, 401);
+    const digest = await sha256(auth);
+    const expected = await this.state.storage.get(PUSH_AUTH_KEY);
+    if (expected && expected !== digest) return json({ error: "invalid room credential" }, 401);
+    if (!expected) await this.state.storage.put(PUSH_AUTH_KEY, digest);
+
+    let body;
+    try { body = await request.json(); } catch { body = {}; }
+    const token = String(body.token ?? "").toLowerCase();
+    if (!validDeviceToken(token)) return json({ error: "valid APNs token required" }, 400);
+    const environment = body.environment === "sandbox" ? "sandbox" : "production";
+    const bundleId = String(body.bundleId ?? "");
+    if (bundleId !== "com.ziborov.granttap") return json({ error: "unexpected bundle id" }, 400);
+
+    let tokens = (await this.state.storage.get(PUSH_TOKENS_KEY)) ?? [];
+    if (request.method === "DELETE") {
+      tokens = tokens.filter((item) => item.token !== token);
+    } else if (request.method === "PUT" || request.method === "POST") {
+      tokens = tokens.filter((item) => item.token !== token);
+      tokens.push({ token, environment, bundleId, updatedAt: Date.now() });
+      if (tokens.length > PUSH_TOKEN_LIMIT) tokens.splice(0, tokens.length - PUSH_TOKEN_LIMIT);
+    } else {
+      return json({ error: "method not allowed" }, 405);
+    }
+    if (tokens.length) await this.state.storage.put(PUSH_TOKENS_KEY, tokens);
+    else await this.state.storage.delete(PUSH_TOKENS_KEY);
+    return json({
+      ok: true,
+      registered: request.method !== "DELETE",
+      enabled: apnsConfigured(this.env),
+      devices: tokens.length,
+    });
+  }
+
+  async handlePushStatus(request) {
+    const auth = bearer(request);
+    const expected = await this.state.storage.get(PUSH_AUTH_KEY);
+    if (!auth || !expected || await sha256(auth) !== expected) {
+      return json({ error: "invalid room credential" }, 401);
+    }
+    const tokens = (await this.state.storage.get(PUSH_TOKENS_KEY)) ?? [];
+    return json({ enabled: apnsConfigured(this.env), devices: tokens.length });
+  }
+
+  async sendWakePush(kind, deliveryId) {
+    if (!apnsConfigured(this.env)) return;
+    const tokens = (await this.state.storage.get(PUSH_TOKENS_KEY)) ?? [];
+    if (!tokens.length) return;
+    const stale = new Set();
+    await Promise.all(tokens.map(async (device) => {
+      const result = await sendAPNs(this.env, device, kind, deliveryId);
+      if (result.stale) stale.add(device.token);
+    }));
+    if (stale.size) {
+      const remaining = tokens.filter((device) => !stale.has(device.token));
+      if (remaining.length) await this.state.storage.put(PUSH_TOKENS_KEY, remaining);
+      else await this.state.storage.delete(PUSH_TOKENS_KEY);
+    }
+  }
+
   webSocketClose() {}
   webSocketError() {}
+}
+
+function bearer(request) {
+  const value = request.headers.get("Authorization") ?? "";
+  return value.startsWith("Bearer ") ? value.slice(7).trim() : "";
+}
+
+async function sha256(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function validDeviceToken(token) {
+  return /^[0-9a-f]{32,256}$/.test(token) && token.length % 2 === 0;
+}
+
+function apnsConfigured(env) {
+  return Boolean(env?.APNS_TEAM_ID && env?.APNS_KEY_ID && env?.APNS_PRIVATE_KEY);
+}
+
+export function pushPayload(kind, deliveryId) {
+  const approval = kind === "approval";
+  return {
+    aps: {
+      alert: {
+        title: "GrantTap",
+        body: approval ? "Your agent is waiting for approval." : "A coding task has an update.",
+      },
+      sound: "default",
+      "content-available": 1,
+      "interruption-level": approval ? "time-sensitive" : "active",
+      "thread-id": "granttap-agent",
+      ...(approval ? { category: "GRANTTAP_APPROVAL" } : {}),
+    },
+    granttapWake: kind,
+    ...(deliveryId ? { deliveryId, ...(approval ? { requestId: deliveryId } : {}) } : {}),
+  };
+}
+
+async function sendAPNs(env, device, kind, deliveryId) {
+  const providerToken = await apnsProviderToken(env);
+  const host = device.environment === "sandbox"
+    ? "https://api.sandbox.push.apple.com"
+    : "https://api.push.apple.com";
+  const response = await fetch(`${host}/3/device/${device.token}`, {
+    method: "POST",
+    headers: {
+      authorization: `bearer ${providerToken}`,
+      "apns-topic": device.bundleId,
+      "apns-push-type": "alert",
+      "apns-priority": "10",
+      "apns-expiration": String(Math.floor(Date.now() / 1000) + 180),
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(pushPayload(kind, deliveryId)),
+  });
+  let reason = "";
+  if (!response.ok) {
+    try { reason = String((await response.json()).reason ?? ""); } catch { /* no body */ }
+  }
+  return { ok: response.ok, stale: response.status === 410 || reason === "BadDeviceToken" || reason === "Unregistered" };
+}
+
+async function apnsProviderToken(env) {
+  const now = Math.floor(Date.now() / 1000);
+  if (cachedProviderToken?.team === env.APNS_TEAM_ID && cachedProviderToken?.key === env.APNS_KEY_ID
+      && now - cachedProviderToken.issuedAt < 45 * 60) return cachedProviderToken.token;
+  const header = base64url(JSON.stringify({ alg: "ES256", kid: env.APNS_KEY_ID }));
+  const claims = base64url(JSON.stringify({ iss: env.APNS_TEAM_ID, iat: now }));
+  const signingInput = `${header}.${claims}`;
+  const pem = String(env.APNS_PRIVATE_KEY).replace(/\\n/g, "\n");
+  const keyBytes = Uint8Array.from(
+    atob(pem.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g, "")),
+    (character) => character.charCodeAt(0),
+  );
+  const key = await crypto.subtle.importKey(
+    "pkcs8", keyBytes, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"],
+  );
+  const signature = new Uint8Array(await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(signingInput),
+  ));
+  const token = `${signingInput}.${base64url(signature)}`;
+  cachedProviderToken = { team: env.APNS_TEAM_ID, key: env.APNS_KEY_ID, issuedAt: now, token };
+  return token;
+}
+
+function base64url(value) {
+  const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value;
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 // ------------------------------------------------- short-code pairing parking

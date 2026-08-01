@@ -10,8 +10,9 @@ name = "granttap-relay"
 main = "src/worker.js"
 compatibility_date = "2026-07-01"
 
-# This worker currently needs no environment variables.
-# Never commit secrets under [vars]; use `wrangler secret put NAME`.
+# APNs production wakes require three encrypted Worker secrets:
+# APNS_TEAM_ID, APNS_KEY_ID, and APNS_PRIVATE_KEY (the complete .p8 contents).
+# Never commit them under [vars]; provision each with `wrangler secret put`.
 
 [[durable_objects.bindings]]
 name = "ROOM"

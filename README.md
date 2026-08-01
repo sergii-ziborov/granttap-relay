@@ -22,9 +22,11 @@ device token plus its sandbox/production environment. It receives `nonce` and
 session title, or message text.
 
 The relay cannot decrypt commands, questions, agent messages, user replies, or
-approval decisions. Device secret keys are created locally and never sent to
-this worker. Short-code pairing blobs are encrypted before upload, expire
-after 15 minutes, are single-use, and are rate-limited per source.
+approval decisions. Device and per-task secret keys are created locally and
+never sent to this worker. Pairing hand-off uses a random 128-bit mailbox id
+that is independent from the 256-bit transfer key kept in the QR/manual token.
+The worker receives the mailbox and ciphertext, but never the transfer key.
+Mailboxes expire after 15 minutes and are single-use.
 
 The complete production worker is intentionally small and public so this
 boundary can be audited instead of trusted as a marketing claim.
@@ -35,8 +37,8 @@ boundary can be audited instead of trusted as a marketing claim.
 | --- | --- |
 | `GET /health` | Liveness check |
 | `wss://host/?room=<room>` | Hibernating WebSocket for one pairing room |
-| `PUT /pair/<CODE>` | Park an already encrypted short-code pairing blob |
-| `GET /pair/<CODE>` | Consume that blob once |
+| `PUT /pair/<MAILBOX_ID>` | Park an already encrypted pairing blob; no key is sent |
+| `GET /pair/<MAILBOX_ID>` | Consume that ciphertext once |
 | `PUT /push/register?room=<room>` | Register an APNs token with the room credential |
 | `DELETE /push/register?room=<room>` | Remove that APNs token |
 | `GET /push/status?room=<room>` | Report provider configuration and registered device count |
@@ -46,11 +48,18 @@ clients attach an opaque delivery id; the relay retains that ciphertext until
 the receiving client confirms that it decrypted the envelope. The queue does
 not treat a WebSocket write as proof of delivery.
 
-The APNs alert is deliberately generic. It wakes the iPhone so the app can pull
-the queued E2EE envelope; approval alerts also carry only the random request id
-needed by the registered notification actions. Apple does not guarantee
+The APNs alert is deliberately generic. It contains only `granttapWake: true`:
+no task kind, request id, delivery id, prompt, command, title, or path. It wakes
+the iPhone so the app can pull and decrypt the queued E2EE envelope. Apple does not guarantee
 background execution timing, so the visible generic alert is the fallback—not
 a promise of instant silent delivery.
+
+A Cloudflare account takeover or Durable Object database export therefore
+reveals only ciphertext plus operational metadata (opaque room/mailbox ids,
+routing roles, IPs, timing/expiry, sizes, APNs token/environment, and the
+neutral wake flag). There is no decryption key in Worker code, bindings,
+storage, logs, or encrypted Worker secrets. APNs provider credentials can sign
+notifications but cannot decrypt GrantTap traffic.
 
 ## Run locally
 

@@ -6,7 +6,7 @@
  * bodies. Payloads never exist here in the clear.
  *
  *   wss://<host>/?room=<room>   WebSocket per pairing room (one DO per room)
- *   PUT/GET /pair/<CODE>        short-code pairing blobs (single use, 15 min)
+ *   PUT/GET /pair/<MAILBOX>     encrypted pairing blob (single use, 15 min)
  *   GET /health
  *
  * The room id rides in the URL because a Durable Object must be chosen before
@@ -15,10 +15,7 @@
  */
 
 const PAIR_TTL_MS = 15 * 60 * 1000;
-const MAX_ATTEMPTS = 10;
 const HOLD_LIMIT = 100;
-const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
-const MAX_ATTEMPT_SOURCES = 1000;
 const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
 const PUSH_TOKEN_LIMIT = 8;
 const PUSH_AUTH_KEY = "push:auth-sha256";
@@ -38,7 +35,7 @@ export default {
 
     if (url.pathname === "/health") return json({ ok: true });
 
-    const pair = /^\/pair\/([A-Za-z0-9]{4,16})$/.exec(url.pathname);
+    const pair = /^\/pair\/([a-f0-9]{32})$/.exec(url.pathname);
     if (pair) {
       // All codes live in one DO so "single use" is a real guarantee,
       // not an eventual-consistency hope.
@@ -142,8 +139,8 @@ export class GrantTapRoom {
         /* stale socket; hibernation will reap it */
       }
     }
-    if (env.to === "phone" && env.wake) {
-      await this.sendWakePush(env.wake, env.deliveryId).catch(() => {});
+    if (env.to === "phone" && env.wake === true) {
+      await this.sendWakePush().catch(() => {});
     }
   }
 
@@ -239,13 +236,13 @@ export class GrantTapRoom {
     return json({ enabled: apnsConfigured(this.env), devices: tokens.length });
   }
 
-  async sendWakePush(kind, deliveryId) {
+  async sendWakePush() {
     if (!apnsConfigured(this.env)) return;
     const tokens = (await this.state.storage.get(PUSH_TOKENS_KEY)) ?? [];
     if (!tokens.length) return;
     const stale = new Set();
     await Promise.all(tokens.map(async (device) => {
-      const result = await sendAPNs(this.env, device, kind, deliveryId);
+      const result = await sendAPNs(this.env, device);
       if (result.stale) stale.add(device.token);
     }));
     if (stale.size) {
@@ -277,26 +274,23 @@ function apnsConfigured(env) {
   return Boolean(env?.APNS_TEAM_ID && env?.APNS_KEY_ID && env?.APNS_PRIVATE_KEY);
 }
 
-export function pushPayload(kind, deliveryId) {
-  const approval = kind === "approval";
+export function pushPayload() {
   return {
     aps: {
       alert: {
         title: "GrantTap",
-        body: approval ? "Your agent is waiting for approval." : "A coding task has an update.",
+        body: "An encrypted update is ready.",
       },
       sound: "default",
       "content-available": 1,
-      "interruption-level": approval ? "time-sensitive" : "active",
+      "interruption-level": "active",
       "thread-id": "granttap-agent",
-      ...(approval ? { category: "GRANTTAP_APPROVAL" } : {}),
     },
-    granttapWake: kind,
-    ...(deliveryId ? { deliveryId, ...(approval ? { requestId: deliveryId } : {}) } : {}),
+    granttapWake: true,
   };
 }
 
-async function sendAPNs(env, device, kind, deliveryId) {
+async function sendAPNs(env, device) {
   const providerToken = await apnsProviderToken(env);
   const host = device.environment === "sandbox"
     ? "https://api.sandbox.push.apple.com"
@@ -311,7 +305,7 @@ async function sendAPNs(env, device, kind, deliveryId) {
       "apns-expiration": String(Math.floor(Date.now() / 1000) + 180),
       "content-type": "application/json",
     },
-    body: JSON.stringify(pushPayload(kind, deliveryId)),
+    body: JSON.stringify(pushPayload()),
   });
   let reason = "";
   if (!response.ok) {
@@ -350,7 +344,7 @@ function base64url(value) {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-// ------------------------------------------------- short-code pairing parking
+// ------------------------------------------------ secure pairing mailbox parking
 
 export class GrantTapCodes {
   constructor(state) {
@@ -359,8 +353,8 @@ export class GrantTapCodes {
 
   async fetch(request) {
     const url = new URL(request.url);
-    const code = /^\/pair\/([A-Za-z0-9]{4,16})$/.exec(url.pathname)?.[1]?.toUpperCase();
-    if (!code) return json({ error: "bad code" }, 400);
+    const mailbox = /^\/pair\/([a-f0-9]{32})$/.exec(url.pathname)?.[1];
+    if (!mailbox) return json({ error: "bad mailbox" }, 400);
 
     if (request.method === "PUT" || request.method === "POST") {
       let body;
@@ -369,8 +363,11 @@ export class GrantTapCodes {
       } catch {
         return json({ error: "json body required" }, 400);
       }
-      if (!body?.nonce || !body?.box) return json({ error: "nonce and box required" }, 400);
-      await this.state.storage.put(`c:${code}`, {
+      if (typeof body?.nonce !== "string" || typeof body?.box !== "string"
+          || body.nonce.length > 128 || body.box.length > 32768) {
+        return json({ error: "bounded nonce and box required" }, 400);
+      }
+      await this.state.storage.put(`c:${mailbox}`, {
         nonce: body.nonce,
         box: body.box,
         expiresAt: Date.now() + PAIR_TTL_MS,
@@ -379,36 +376,11 @@ export class GrantTapCodes {
     }
 
     if (request.method === "GET") {
-      // Rate limits are per source and expire. A stranger can no longer lock
-      // pairing globally for every GrantTap installation with ten bad guesses.
-      const source = request.headers.get("CF-Connecting-IP") ?? "local";
-      const now = Date.now();
-      const attemptTable = (await this.state.storage.get("attempts")) ?? {};
-      for (const [key, value] of Object.entries(attemptTable)) {
-        if (!value?.resetAt || value.resetAt <= now) delete attemptTable[key];
-      }
-      let attempts = attemptTable[source] ?? { count: 0, resetAt: now + ATTEMPT_WINDOW_MS };
-      if (attempts.resetAt <= now) attempts = { count: 0, resetAt: now + ATTEMPT_WINDOW_MS };
-      if (attempts.count >= MAX_ATTEMPTS) return json({ error: "too many attempts" }, 429);
-
-      const item = await this.state.storage.get(`c:${code}`);
+      const item = await this.state.storage.get(`c:${mailbox}`);
       if (!item || item.expiresAt <= Date.now()) {
-        attempts.count += 1;
-        attemptTable[source] = attempts;
-        const sources = Object.entries(attemptTable);
-        if (sources.length > MAX_ATTEMPT_SOURCES) {
-          sources.sort((a, b) => a[1].resetAt - b[1].resetAt);
-          for (const [key] of sources.slice(0, sources.length - MAX_ATTEMPT_SOURCES)) {
-            delete attemptTable[key];
-          }
-        }
-        await this.state.storage.put("attempts", attemptTable);
-        return json({ error: "unknown or expired code" }, 404);
+        return json({ error: "unknown or expired mailbox" }, 404);
       }
-      await this.state.storage.delete(`c:${code}`); // single use
-      delete attemptTable[source];
-      if (Object.keys(attemptTable).length) await this.state.storage.put("attempts", attemptTable);
-      else await this.state.storage.delete("attempts");
+      await this.state.storage.delete(`c:${mailbox}`); // single use
       return json({ nonce: item.nonce, box: item.box });
     }
 

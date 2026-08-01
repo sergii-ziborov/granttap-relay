@@ -27,14 +27,13 @@ test("push registration is routed to the room durable object", async () => {
   assert.equal(forwarded, "https://relay.example/push/status?room=room-a");
 });
 
-test("APNs wake payload stays generic while retaining the opaque delivery id", () => {
+test("APNs wake payload is content-neutral and carries no delivery correlation id", () => {
   assert.equal(validDeviceToken("ab".repeat(32)), true);
   assert.equal(validDeviceToken("not-a-token"), false);
-  const payload = pushPayload("approval", "opaque-delivery");
+  const payload = pushPayload();
   assert.equal(payload.aps["content-available"], 1);
-  assert.equal(payload.aps["interruption-level"], "time-sensitive");
-  assert.equal(payload.aps.category, "GRANTTAP_APPROVAL");
-  assert.equal(payload.deliveryId, "opaque-delivery");
-  assert.equal(payload.requestId, "opaque-delivery");
-  assert.doesNotMatch(JSON.stringify(payload), /command|prompt|session/i);
+  assert.equal(payload.aps["interruption-level"], "active");
+  assert.equal(payload.granttapWake, true);
+  assert.equal("deliveryId" in payload, false);
+  assert.doesNotMatch(JSON.stringify(payload), /command|prompt|session|approval|schedule|response/i);
 });

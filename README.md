@@ -28,6 +28,11 @@ that is independent from the 256-bit transfer key kept in the QR/manual token.
 The worker receives the mailbox and ciphertext, but never the transfer key.
 Mailboxes expire after 15 minutes and are single-use.
 
+Plaintext exists only on authorized endpoints. Traffic crossing the app
+transport, network, Cloudflare, Durable Objects, and APNs remains authenticated
+ciphertext. One task key cannot decrypt a second task; a device can open that
+second task only if its independent key was explicitly granted to that device.
+
 The complete production worker is intentionally small and public so this
 boundary can be audited instead of trusted as a marketing claim.
 

@@ -11,10 +11,10 @@
     "check": "node --check src/worker.js && wrangler deploy --dry-run"
   },
   "devDependencies": {
-    "wrangler": "^4.114.0"
+    "wrangler": "^4.118.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "repository": {
     "type": "git",
@@ -24,5 +24,8 @@
     "url": "https://github.com/sergii-ziborov/granttap-relay/issues"
   },
   "homepage": "https://granttap.com",
-  "license": "MIT"
+  "license": "MIT",
+  "overrides": {
+    "undici": "7.29.0"
+  }
 }

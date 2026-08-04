@@ -20,13 +20,24 @@ const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
 const PUSH_TOKEN_LIMIT = 8;
 const PUSH_AUTH_KEY = "push:auth-sha256";
 const PUSH_TOKENS_KEY = "push:tokens";
+const MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024;
+// One SQLite-backed Durable Object key/value is limited to 2 MB. Keep the
+// complete retry queue below that boundary; larger envelopes remain live-only.
+const MAX_QUEUE_BYTES = 1_800_000;
+const MAX_PAIRING_BODY_BYTES = 40_000;
+const MAX_PUSH_BODY_BYTES = 4_096;
+const MAX_ENVELOPE_TTL_MS = 25 * 60 * 60 * 1000;
 
 let cachedProviderToken = null;
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    },
   });
 
 export default {
@@ -37,22 +48,22 @@ export default {
 
     const pair = /^\/pair\/([a-f0-9]{32})$/.exec(url.pathname);
     if (pair) {
-      // All codes live in one DO so "single use" is a real guarantee,
-      // not an eventual-consistency hope.
-      const stub = env.CODES.get(env.CODES.idFromName("codes"));
+      // One DO per unguessable mailbox gives atomic single-use reads without a
+      // global hot object, and lets its alarm reclaim expired ciphertext.
+      const stub = env.CODES.get(env.CODES.idFromName(pair[1]));
       return stub.fetch(request);
     }
 
     if (url.pathname === "/push/register" || url.pathname === "/push/status") {
       const room = url.searchParams.get("room");
-      if (!room) return json({ error: "room query parameter required" }, 400);
+      if (!validRoom(room)) return json({ error: "valid room query parameter required" }, 400);
       const stub = env.ROOM.get(env.ROOM.idFromName(room));
       return stub.fetch(request);
     }
 
     if ((request.headers.get("Upgrade") ?? "").toLowerCase() === "websocket") {
       const room = url.searchParams.get("room");
-      if (!room) return json({ error: "room query parameter required" }, 400);
+      if (!validRoom(room)) return json({ error: "valid room query parameter required" }, 400);
       const stub = env.ROOM.get(env.ROOM.idFromName(room));
       return stub.fetch(request);
     }
@@ -78,15 +89,17 @@ export class GrantTapRoom {
     }
     const pair = new WebSocketPair();
     const room = url.searchParams.get("room");
-    if (!room) return json({ error: "room query parameter required" }, 400);
+    if (!validRoom(room)) return json({ error: "valid room query parameter required" }, 400);
     const auth = bearer(request);
+    if (!validRoomCredential(auth)) return json({ error: "room credential required" }, 401);
     const expectedAuth = await this.state.storage.get(PUSH_AUTH_KEY);
-    if (expectedAuth && (!auth || await sha256(auth) !== expectedAuth)) {
+    const authDigest = await sha256(auth);
+    if (expectedAuth && !constantTimeEqual(authDigest, expectedAuth)) {
       return json({ error: "invalid room credential" }, 401);
     }
     // New pairings carry a relay-only random credential. The first authenticated
     // socket pins its hash; the E2EE payload keys remain unknown to the relay.
-    if (!expectedAuth && auth) await this.state.storage.put(PUSH_AUTH_KEY, await sha256(auth));
+    if (!expectedAuth) await this.state.storage.put(PUSH_AUTH_KEY, authDigest);
     // Hibernation API: the DO can be evicted while sockets stay open.
     this.state.acceptWebSocket(pair[1]);
     pair[1].serializeAttachment({ room });
@@ -95,24 +108,22 @@ export class GrantTapRoom {
 
   async webSocketMessage(ws, raw) {
     if (typeof raw !== "string") return;
+    if (byteLength(raw) > MAX_WEBSOCKET_MESSAGE_BYTES) return;
     let env;
     try {
       env = JSON.parse(raw);
     } catch {
       return;
     }
-    if (env?.type === "relay.ack" && typeof env.deliveryId === "string") {
+    if (env?.type === "relay.ack" && validIdentifier(env.deliveryId, 180)) {
       const known = ws.deserializeAttachment() ?? {};
       if (known.role) await this.acknowledge(known.role, env.deliveryId);
       return;
     }
-    if (!env || typeof env !== "object" || !env.room || !env.from || !env.to) return;
-    if (env.expiresAt != null && env.expiresAt <= Date.now()) return;
-
     // The URL fixes the room before upgrade; the first packet fixes the role.
     const known = ws.deserializeAttachment() ?? {};
-    const room = known.room ?? env.room; // backwards-compatible with pre-upgrade sockets
-    if (env.room !== room) return;
+    const room = known.room;
+    if (!validEnvelope(env, room, Date.now())) return;
     if (!known.role) {
       ws.serializeAttachment({ room, role: env.from });
       await this.flushTo(env.from, ws);
@@ -145,13 +156,23 @@ export class GrantTapRoom {
   }
 
   async queue(role, raw, deliveryId, expiresAt) {
+    const rawBytes = byteLength(raw);
+    if (rawBytes > MAX_QUEUE_BYTES) return;
     const key = `q:${role}`;
     const now = Date.now();
     const q = ((await this.state.storage.get(key)) ?? [])
       .filter((item) => (item.expiresAt ?? now + DEFAULT_QUEUE_TTL_MS) > now);
     if (deliveryId && q.some((item) => item.deliveryId === deliveryId)) return;
-    q.push({ raw, deliveryId, expiresAt: expiresAt ?? now + DEFAULT_QUEUE_TTL_MS });
+    q.push({ raw, rawBytes, deliveryId, expiresAt: expiresAt ?? now + DEFAULT_QUEUE_TTL_MS });
     if (q.length > HOLD_LIMIT) q.splice(0, q.length - HOLD_LIMIT);
+    const storedBytes = (item) => typeof item === "string"
+      ? byteLength(item)
+      : (item.rawBytes ?? byteLength(item.raw ?? ""));
+    let totalBytes = q.reduce((total, item) => total + storedBytes(item), 0);
+    while (q.length > 1 && totalBytes > MAX_QUEUE_BYTES) {
+      const removed = q.shift();
+      totalBytes -= storedBytes(removed);
+    }
     await this.state.storage.put(key, q);
   }
 
@@ -173,7 +194,8 @@ export class GrantTapRoom {
       return expiresAt > now;
     });
     const remaining = [];
-    for (const item of pending) {
+    for (let index = 0; index < pending.length; index += 1) {
+      const item = pending[index];
       const raw = typeof item === "string" ? item : item.raw;
       if (!raw) continue;
       try {
@@ -183,6 +205,7 @@ export class GrantTapRoom {
         if (typeof item !== "string" && item.deliveryId) remaining.push(item);
       } catch {
         remaining.push(item);
+        remaining.push(...pending.slice(index + 1));
         break;
       }
     }
@@ -192,17 +215,23 @@ export class GrantTapRoom {
 
   async handlePushRegistration(request) {
     const auth = bearer(request);
-    if (!auth) return json({ error: "room credential required" }, 401);
+    if (!validRoomCredential(auth)) return json({ error: "room credential required" }, 401);
     const digest = await sha256(auth);
     const expected = await this.state.storage.get(PUSH_AUTH_KEY);
-    if (expected && expected !== digest) return json({ error: "invalid room credential" }, 401);
+    if (expected && !constantTimeEqual(digest, expected)) {
+      return json({ error: "invalid room credential" }, 401);
+    }
     if (!expected) await this.state.storage.put(PUSH_AUTH_KEY, digest);
 
     let body;
-    try { body = await request.json(); } catch { body = {}; }
+    try { body = await readJsonLimited(request, MAX_PUSH_BODY_BYTES); } catch { body = null; }
+    if (!body) return json({ error: "bounded JSON body required" }, 400);
     const token = String(body.token ?? "").toLowerCase();
     if (!validDeviceToken(token)) return json({ error: "valid APNs token required" }, 400);
-    const environment = body.environment === "sandbox" ? "sandbox" : "production";
+    if (body.environment !== "sandbox" && body.environment !== "production") {
+      return json({ error: "environment must be sandbox or production" }, 400);
+    }
+    const environment = body.environment;
     const bundleId = String(body.bundleId ?? "");
     if (bundleId !== "com.ziborov.granttap") return json({ error: "unexpected bundle id" }, 400);
 
@@ -229,7 +258,8 @@ export class GrantTapRoom {
   async handlePushStatus(request) {
     const auth = bearer(request);
     const expected = await this.state.storage.get(PUSH_AUTH_KEY);
-    if (!auth || !expected || await sha256(auth) !== expected) {
+    if (!validRoomCredential(auth) || !expected
+        || !constantTimeEqual(await sha256(auth), expected)) {
       return json({ error: "invalid room credential" }, 401);
     }
     const tokens = (await this.state.storage.get(PUSH_TOKENS_KEY)) ?? [];
@@ -261,9 +291,77 @@ function bearer(request) {
   return value.startsWith("Bearer ") ? value.slice(7).trim() : "";
 }
 
+export function validRoom(room) {
+  return typeof room === "string" && /^[a-f0-9]{16,64}$/.test(room);
+}
+
+export function validRoomCredential(value) {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function validIdentifier(value, max) {
+  return typeof value === "string" && value.length >= 1 && value.length <= max;
+}
+
+export function validEnvelope(env, room, now = Date.now()) {
+  if (!env || typeof env !== "object" || env.v !== 1 || env.room !== room) return false;
+  if (env.from !== "machine" && env.from !== "phone") return false;
+  if (env.to !== "machine" && env.to !== "phone" && env.to !== "all") return false;
+  if (!validIdentifier(env.senderId, 180)) return false;
+  if (env.deliveryId != null && !validIdentifier(env.deliveryId, 180)) return false;
+  if (env.wake != null && typeof env.wake !== "boolean") return false;
+  if (env.expiresAt != null && (!Number.isSafeInteger(env.expiresAt)
+      || env.expiresAt <= now || env.expiresAt > now + MAX_ENVELOPE_TTL_MS)) return false;
+  if (typeof env.nonce !== "string" || !/^[A-Za-z0-9+/]{32}$/.test(env.nonce)) return false;
+  if (typeof env.box !== "string" || env.box.length < 24
+      || !/^[A-Za-z0-9+/]+={0,2}$/.test(env.box)) return false;
+  return true;
+}
+
+function byteLength(value) {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+async function readJsonLimited(request, maxBytes) {
+  const declared = Number(request.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declared) && declared > maxBytes) throw new Error("body too large");
+  if (!request.body) return null;
+  const reader = request.body.getReader();
+  const chunks = [];
+  let length = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    length += value.byteLength;
+    if (length > maxBytes) {
+      await reader.cancel();
+      throw new Error("body too large");
+    }
+    chunks.push(value);
+  }
+  const merged = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(merged));
+}
+
 async function sha256(value) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function constantTimeEqual(left, right) {
+  if (typeof left !== "string" || typeof right !== "string" || left.length !== right.length) {
+    return false;
+  }
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
 }
 
 export function validDeviceToken(token) {
@@ -277,14 +375,7 @@ function apnsConfigured(env) {
 export function pushPayload() {
   return {
     aps: {
-      alert: {
-        title: "GrantTap",
-        body: "An encrypted update is ready.",
-      },
-      sound: "default",
       "content-available": 1,
-      "interruption-level": "active",
-      "thread-id": "granttap-agent",
     },
     granttapWake: true,
   };
@@ -300,9 +391,10 @@ async function sendAPNs(env, device) {
     headers: {
       authorization: `bearer ${providerToken}`,
       "apns-topic": device.bundleId,
-      "apns-push-type": "alert",
-      "apns-priority": "10",
+      "apns-push-type": "background",
+      "apns-priority": "5",
       "apns-expiration": String(Math.floor(Date.now() / 1000) + 180),
+      "apns-collapse-id": "granttap-wake",
       "content-type": "application/json",
     },
     body: JSON.stringify(pushPayload()),
@@ -359,31 +451,50 @@ export class GrantTapCodes {
     if (request.method === "PUT" || request.method === "POST") {
       let body;
       try {
-        body = await request.json();
+        body = await readJsonLimited(request, MAX_PAIRING_BODY_BYTES);
       } catch {
-        return json({ error: "json body required" }, 400);
+        return json({ error: "bounded JSON body required" }, 400);
       }
-      if (typeof body?.nonce !== "string" || typeof body?.box !== "string"
-          || body.nonce.length > 128 || body.box.length > 32768) {
-        return json({ error: "bounded nonce and box required" }, 400);
+      if (!validBase64(body?.nonce, 32, 32) || !validBase64(body?.box, 24, 32_768)) {
+        return json({ error: "canonical bounded base64 nonce and box required" }, 400);
       }
-      await this.state.storage.put(`c:${mailbox}`, {
+      const existing = await this.state.storage.get("pairing");
+      if (existing?.expiresAt > Date.now()) {
+        return json({ error: "mailbox already occupied" }, 409);
+      }
+      await this.state.storage.put("pairing", {
         nonce: body.nonce,
         box: body.box,
         expiresAt: Date.now() + PAIR_TTL_MS,
       });
+      await this.state.storage.setAlarm(Date.now() + PAIR_TTL_MS);
       return json({ ok: true, expiresInSec: PAIR_TTL_MS / 1000 });
     }
 
     if (request.method === "GET") {
-      const item = await this.state.storage.get(`c:${mailbox}`);
+      const item = await this.state.storage.get("pairing");
       if (!item || item.expiresAt <= Date.now()) {
+        if (item) await this.state.storage.deleteAll();
         return json({ error: "unknown or expired mailbox" }, 404);
       }
-      await this.state.storage.delete(`c:${mailbox}`); // single use
+      await this.state.storage.deleteAll(); // atomically consumed; alarm included
       return json({ nonce: item.nonce, box: item.box });
     }
 
     return json({ error: "method not allowed" }, 405);
+  }
+
+  async alarm() {
+    await this.state.storage.deleteAll();
+  }
+}
+
+function validBase64(value, minLength, maxLength) {
+  if (typeof value !== "string" || value.length < minLength || value.length > maxLength
+      || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
+  try {
+    return btoa(atob(value)) === value;
+  } catch {
+    return false;
   }
 }

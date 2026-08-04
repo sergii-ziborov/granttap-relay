@@ -8,7 +8,11 @@
 
 name = "granttap-relay"
 main = "src/worker.js"
-compatibility_date = "2026-07-01"
+compatibility_date = "2026-08-04"
+
+[observability]
+enabled = true
+head_sampling_rate = 1
 
 # APNs production wakes require three encrypted Worker secrets:
 # APNS_TEAM_ID, APNS_KEY_ID, and APNS_PRIVATE_KEY (the complete .p8 contents).

@@ -18,7 +18,7 @@ Production health endpoint:
 The relay can see routing metadata: room, sender/recipient roles, IP addresses,
 timing, expiry, message sizes, and—when background delivery is enabled—an APNs
 device token plus its sandbox/production environment. It receives `nonce` and
-`box` as opaque ciphertext. Push alerts contain no command, prompt, path,
+`box` as opaque ciphertext. Silent push wakes contain no command, prompt, path,
 session title, or message text.
 
 The relay cannot decrypt commands, questions, agent messages, user replies, or
@@ -48,16 +48,21 @@ boundary can be audited instead of trusted as a marketing claim.
 | `DELETE /push/register?room=<room>` | Remove that APNs token |
 | `GET /push/status?room=<room>` | Report provider configuration and registered device count |
 
-Queued messages are capped per recipient and expired before delivery. New
+Queued messages are capped per recipient, by total stored bytes, and expired before delivery. New
 clients attach an opaque delivery id; the relay retains that ciphertext until
 the receiving client confirms that it decrypted the envelope. The queue does
-not treat a WebSocket write as proof of delivery.
+not treat a WebSocket write as proof of delivery. Cloudflare limits one
+Durable Object key/value to 2 MB, so encrypted frames above the relay's 1.8 MB
+retry budget are delivered only to an already connected peer and are not stored
+for offline retry. Client attachment limits keep complete task frames under the
+separate 32 MiB WebSocket receive limit.
 
-The APNs alert is deliberately generic. It contains only `granttapWake: true`:
-no task kind, request id, delivery id, prompt, command, title, or path. It wakes
-the iPhone so the app can pull and decrypt the queued E2EE envelope. Apple does not guarantee
-background execution timing, so the visible generic alert is the fallback—not
-a promise of instant silent delivery.
+The APNs payload is a silent background wake with `content-available: 1` and
+`granttapWake: true`: no alert, sound, task kind, request id, delivery id,
+prompt, command, title, or path. It asks iOS to pull and decrypt the queued E2EE
+envelope, after which the app creates one actionable local notification. Apple
+does not guarantee background execution timing, so this is best-effort—not a
+promise of instant delivery.
 
 A Cloudflare account takeover or Durable Object database export therefore
 reveals only ciphertext plus operational metadata (opaque room/mailbox ids,
@@ -68,7 +73,7 @@ notifications but cannot decrypt GrantTap traffic.
 
 ## Run locally
 
-Requires Node.js 20 or newer.
+Requires Node.js 22 or newer (the minimum supported by the pinned Wrangler line).
 
 ```bash
 git clone https://github.com/sergii-ziborov/granttap-relay.git
@@ -102,6 +107,10 @@ npx wrangler secret put APNS_PRIVATE_KEY
 emitted secure WebSocket URL as the relay URL in your GrantTap pairing. Without
 all three secrets, `/push/status` honestly reports `enabled: false`; foreground
 WebSocket delivery and durable queues keep working.
+
+Every WebSocket and push endpoint also requires the pairing's random 256-bit
+room credential. First use pins only its SHA-256 digest inside that room's
+Durable Object; legacy pairings that predate this credential must re-pair.
 
 Never put APNs credentials in `wrangler.toml`, `.env`, a GitHub Actions
 variable, or a committed `.dev.vars` file.

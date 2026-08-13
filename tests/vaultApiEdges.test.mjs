@@ -81,3 +81,11 @@ test("vault API rejects weak delete ETags and reports a missing-record conflict"
   assert.equal(conflict.status, 412);
   assert.equal((await conflict.json()).revision, null);
 });
+
+test("vault API accepts the documented POST create alias", async () => {
+  const code = generateUnlockCode();
+  const id = await vaultIdFromCode(code);
+  const envelope = await encryptVault(await keyFromCode(code), emptyVault("post"));
+  const response = await handleVaultApi(new Request(`https://relay.example/api/vault/${id}`, { method: "POST", headers: { "if-none-match": "*", "content-type": "application/json" }, body: JSON.stringify({ envelope }) }), { GRANTTAP_VAULT: memoryKv() });
+  assert.equal(response.status, 200);
+});

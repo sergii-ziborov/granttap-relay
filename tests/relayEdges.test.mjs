@@ -95,3 +95,21 @@ test("web pairing router delegates a CORS-protected challenge to its durable obj
   assert.equal(response.headers.get("access-control-allow-origin"), origin);
   assert.equal(forwarded, true);
 });
+
+test("vault router handles direct API failures and preserves non-browser responses", async () => {
+  const vaultId = room.repeat(2);
+  const invalid = await worker.fetch(new Request("https://relay.example/api/vault/not-a-vault"), {});
+  assert.equal(invalid.status, 404);
+  const unavailable = await worker.fetch(new Request(`https://relay.example/api/vault/${vaultId}`), {});
+  assert.equal(unavailable.status, 503);
+  const env = { VAULTS: { idFromName: (id) => id, get: () => ({ fetch: () => new Response("opaque", { status: 202 }) }) } };
+  const direct = await worker.fetch(new Request(`https://relay.example/api/vault/${vaultId}`), env);
+  assert.equal(direct.status, 202);
+  assert.equal(direct.headers.get("access-control-allow-origin"), null);
+  assert.equal(direct.headers.get("access-control-expose-headers"), null);
+});
+
+test("origin policy rejects local hosts over non-web protocols", () => {
+  const request = new Request("https://relay.example/a", { headers: { origin: "ftp://localhost" } });
+  assert.equal(allowedWebOrigin(request, {}), null);
+});

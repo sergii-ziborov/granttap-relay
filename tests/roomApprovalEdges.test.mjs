@@ -73,3 +73,14 @@ test("approval capability rejects a valid-format token not owned by the room", a
   const { viewToken } = await published.json();
   assert.equal((await instance.fetch(new Request(`https://relay.example/a/${room}/${viewToken}/unknown/decide`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decision: "allow" }) }))).status, 404);
 });
+
+test("approval capability serves its human page and JSON representation", async () => {
+  const instance = relayRoom();
+  const published = await instance.fetch(request(`/approvals?room=${room}`, "PUT", { requestId: "req-5", title: "Allow command" }));
+  const { viewToken } = await published.json();
+  const page = await instance.fetch(new Request(`https://relay.example/a/${room}/${viewToken}`));
+  assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
+  assert.match(await page.text(), /GrantTap Approvals/);
+  const document = await instance.fetch(new Request(`https://relay.example/a/${room}/${viewToken}/json`));
+  assert.deepEqual((await document.json()).approvals.map((item) => item.requestId), ["req-5"]);
+});

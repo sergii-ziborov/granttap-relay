@@ -66,3 +66,10 @@ test("approval API retains completed entries on cancel-all and rejects invalid s
   invalidTokenRoom.state.storage.put("approvals:view", { token: "not-a-token" });
   assert.equal((await invalidTokenRoom.fetch(new Request(`https://relay.example/a/${room}/${"ab".repeat(32)}`))).status, 401);
 });
+
+test("approval capability rejects a valid-format token not owned by the room", async () => {
+  const instance = relayRoom();
+  const published = await instance.fetch(request(`/approvals?room=${room}`, "GET"));
+  const { viewToken } = await published.json();
+  assert.equal((await instance.fetch(new Request(`https://relay.example/a/${room}/${viewToken}/unknown/decide`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decision: "allow" }) }))).status, 404);
+});

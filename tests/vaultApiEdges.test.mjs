@@ -72,3 +72,12 @@ test("vault API cancels streamed bodies that exceed the ciphertext size limit", 
   const response = await handleVaultApi(new Request(`https://relay.example/api/vault/${"ab".repeat(32)}`, { method: "PUT", body: stream, duplex: "half" }), { GRANTTAP_VAULT: memoryKv() });
   assert.equal(response.status, 400);
 });
+
+test("vault API rejects weak delete ETags and reports a missing-record conflict", async () => {
+  const id = "ef".repeat(32);
+  const env = { GRANTTAP_VAULT: memoryKv() };
+  assert.equal((await handleVaultApi(new Request(`https://relay.example/api/vault/${id}`, { method: "DELETE", headers: { "if-match": `W/\"${"ab".repeat(32)}\"` } }), env)).status, 428);
+  const conflict = await handleVaultApi(new Request(`https://relay.example/api/vault/${id}`, { method: "DELETE", headers: { "if-match": `\"${"ab".repeat(32)}\"` } }), env);
+  assert.equal(conflict.status, 412);
+  assert.equal((await conflict.json()).revision, null);
+});

@@ -3,6 +3,7 @@ import test from "node:test";
 import worker, {
   GrantTapCodes,
   GrantTapRoom,
+  GrantTapVault,
   pushPayload,
   validDeviceToken,
   validEnvelope,
@@ -17,6 +18,12 @@ test("health endpoint is available without bindings", async () => {
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.deepEqual(await response.json(), { ok: true });
+});
+
+test("vault durable object delegates ciphertext handling to the vault API", async () => {
+  const vault = new GrantTapVault({ storage: { get: async () => null, transaction: async (callback) => callback({ get: async () => null, put: async () => {} }) } }, {});
+  const response = await vault.fetch(new Request("https://relay.example/api/vault/" + "ab".repeat(32)));
+  assert.equal(response.status, 503);
 });
 
 test("web pairing challenges are origin-bound, single-use, and keep the transfer key off relay", async () => {

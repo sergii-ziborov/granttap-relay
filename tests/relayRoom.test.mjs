@@ -227,3 +227,20 @@ test("room rejects unauthenticated upgrades and avoids nonmatching live targets"
   await relayRoom.webSocketMessage(sender, JSON.stringify({ v: 1, room, from: "machine", to: "phone", senderId: "machine-1", nonce: "A".repeat(32), box: "A".repeat(24) }));
   assert.equal(state.values.get("q:phone").length, 1);
 });
+
+test("room rejects unsupported push mutation after authenticated bounded JSON", async () => {
+  const state = memoryState();
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, {});
+  const request = new Request(`https://relay.example/push/register?room=${room}`, { method: "PATCH", headers: { authorization: `Bearer ${credential}`, "content-type": "application/json" }, body: JSON.stringify({ token, environment: "sandbox", bundleId: "com.ziborov.granttap" }) });
+  assert.equal((await relayRoom.fetch(request)).status, 405);
+});
+
+test("room accepts wake envelopes and prunes expired queued records before retry", async () => {
+  const state = memoryState(new Map([["q:phone", [{ raw: "expired", expiresAt: Date.now() - 1 }]]]));
+  const attachment = { room, role: "machine" };
+  const ws = { deserializeAttachment: () => attachment, serializeAttachment: () => {}, send: () => {} };
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, {});
+  await relayRoom.webSocketMessage(ws, JSON.stringify({ v: 1, room, from: "machine", to: "phone", senderId: "machine-1", nonce: "A".repeat(32), box: "A".repeat(24), wake: true }));
+  assert.equal(state.values.get("q:phone").length, 1);
+  assert.equal(state.values.get("q:phone")[0].raw.includes("expired"), false);
+});

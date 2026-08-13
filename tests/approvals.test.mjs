@@ -9,6 +9,7 @@ import {
   publicCard,
   upsertApproval,
   validViewToken,
+  validRequestId,
 } from "../src/approvals.js";
 
 test("danger normalization and card parse", () => {
@@ -58,4 +59,17 @@ test("approvals page html is a visible Allow surface", () => {
   assert.match(html, /not a chat message/i);
   assert.match(html, /waiting for computer confirmation/i);
   assert.doesNotMatch(html, /st\.textContent=decision==="allow"\?"Accepted"/);
+});
+
+test("approval card bounds optional metadata and expiry consistently", () => {
+  const now = 1_000;
+  assert.equal(validRequestId("req"), false);
+  assert.equal(validRequestId("req-1"), true);
+  const parsed = parseApprovalCard({ requestId: "req-5", title: "ok", ttlMs: 1, command: undefined, createdAt: "not-a-number" }, now);
+  assert.equal(parsed.card.command, null);
+  assert.equal(parsed.card.expiresAt, now + 5_000);
+  assert.equal(parsed.card.createdAt, now);
+  assert.equal(parseApprovalCard({ requestId: "req-6", title: "x".repeat(801) }).error, "title required (≤800 chars)");
+  const items = Array.from({ length: 30 }, (_, index) => ({ requestId: String(index), expiresAt: now + 1 }));
+  assert.equal(pruneApprovals(items, now).length, 24);
 });

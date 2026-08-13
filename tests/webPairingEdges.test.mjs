@@ -47,3 +47,12 @@ test("web pairing requires an exact allowed registration origin", async () => {
   const mismatchPairing = new GrantTapWebPairing(mismatched);
   assert.equal((await mismatchPairing.fetch(new Request(url, { method: "PUT", headers: { origin: "https://evil.example" }, body: JSON.stringify({ origin: "https://granttap.com" }) }))).status, 403);
 });
+
+test("web pairing rejects noncanonical origins and oversized registration bodies", async () => {
+  const noncanonical = pairingState();
+  const pairing = new GrantTapWebPairing(noncanonical);
+  assert.equal((await pairing.fetch(new Request(url, { method: "PUT", headers: { origin: "https://granttap.com/path" }, body: JSON.stringify({ origin: "https://granttap.com/path" }) }))).status, 403);
+  const oversized = pairingState();
+  const oversizedPairing = new GrantTapWebPairing(oversized);
+  assert.equal((await oversizedPairing.fetch(new Request(url, { method: "PUT", headers: { origin: "https://granttap.com", "content-length": "32001" }, body: JSON.stringify({ origin: "https://granttap.com" }) }))).status, 403);
+});

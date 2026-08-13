@@ -33,9 +33,5 @@ export function validDeviceToken(token) {
 export function validBase64(value, minLength, maxLength) {
   if (typeof value !== "string" || value.length < minLength || value.length > maxLength
       || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false;
-  try {
-    return btoa(atob(value)) === value;
-  } catch {
-    return false;
-  }
+  return btoa(atob(value)) === value;
 }

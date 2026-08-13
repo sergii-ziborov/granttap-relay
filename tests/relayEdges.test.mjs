@@ -3,6 +3,7 @@ import test from "node:test";
 import worker from "../src/worker.js";
 import { allowedWebOrigin, withApprovalCors } from "../src/relay/relayCors.js";
 import { validBase64, validEnvelope, validIdentifier } from "../src/relay/relayValidation.js";
+import { validDeviceToken } from "../src/relay/relayValidation.js";
 
 const room = "ab".repeat(16);
 const token = "cd".repeat(32);
@@ -30,6 +31,7 @@ test("relay validation rejects malformed opaque routing data", () => {
   assert.equal(validBase64("A".repeat(32), 32, 32), true);
   assert.equal(validBase64("A".repeat(31), 32, 32), false);
   assert.equal(validBase64("A".repeat(32) + "!", 32, 40), false);
+  assert.equal(validDeviceToken("a".repeat(33)), false);
   const envelope = { v: 1, room, from: "machine", to: "phone", senderId: "id", nonce: "A".repeat(32), box: "A".repeat(24) };
   assert.equal(validEnvelope(envelope, room), true);
   assert.equal(validEnvelope({ ...envelope, wake: "yes" }, room), false);
@@ -75,4 +77,21 @@ test("CORS accepts all documented request headers and development origins", asyn
   } }), {});
   assert.equal(response.status, 204);
   assert.equal(response.headers.get("access-control-allow-origin"), "https://localhost:5173");
+});
+
+test("origin policy rejects path and credential variants of trusted hosts", () => {
+  const from = (value) => new Request("https://relay.example/a", { headers: { origin: value } });
+  assert.equal(allowedWebOrigin(from("https://granttap.com/path"), {}), null);
+  assert.equal(allowedWebOrigin(from("https://user:pass@granttap.com"), {}), null);
+  assert.equal(allowedWebOrigin(from("https://www.granttap.com"), {}), "https://www.granttap.com");
+});
+
+test("web pairing router delegates a CORS-protected challenge to its durable object", async () => {
+  const id = "ef".repeat(16);
+  let forwarded = false;
+  const env = { WEB_CODES: { idFromName: (name) => name, get: () => ({ fetch: () => { forwarded = true; return new Response("{}", { status: 201 }); } }) } };
+  const response = await worker.fetch(new Request(`https://relay.example/web-pair/${id}`, { headers: { origin } }), env);
+  assert.equal(response.status, 201);
+  assert.equal(response.headers.get("access-control-allow-origin"), origin);
+  assert.equal(forwarded, true);
 });

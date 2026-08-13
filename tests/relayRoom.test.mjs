@@ -215,3 +215,15 @@ test("room keeps non-stale wake devices and rejects a role switch", async () => 
   await relayRoom.webSocketMessage(ws, JSON.stringify({ v: 1, room, from: "phone", to: "machine", senderId: "phone-1", nonce: "A".repeat(32), box: "A".repeat(24) }));
   assert.equal(state.values.has("q:machine"), false);
 });
+
+test("room rejects unauthenticated upgrades and avoids nonmatching live targets", async () => {
+  const state = memoryState();
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, {});
+  assert.equal((await relayRoom.fetch(new Request(`https://relay.example/?room=${room}`, { headers: { upgrade: "websocket", authorization: "Bearer bad" } }))).status, 401);
+  const attachment = { room, role: "machine" };
+  const sender = { deserializeAttachment: () => attachment, serializeAttachment: () => {}, send: () => {} };
+  const unrelated = { deserializeAttachment: () => null, send: () => assert.fail("unrelated socket must not receive") };
+  relayRoom.state.getWebSockets = () => [sender, unrelated];
+  await relayRoom.webSocketMessage(sender, JSON.stringify({ v: 1, room, from: "machine", to: "phone", senderId: "machine-1", nonce: "A".repeat(32), box: "A".repeat(24) }));
+  assert.equal(state.values.get("q:phone").length, 1);
+});

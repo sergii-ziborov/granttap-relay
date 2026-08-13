@@ -53,3 +53,16 @@ test("approval API rejects missing JSON streams and capability token state", asy
   assert.equal((await instance.fetch(new Request(`https://relay.example/a/${room}/${viewToken}/req-3/decide`, { method: "POST" }))).status, 400);
   assert.equal((await instance.fetch(request(`/approvals?room=${room}&requestId=req-3`, "DELETE"))).status, 200);
 });
+
+test("approval API retains completed entries on cancel-all and rejects invalid stored token records", async () => {
+  const instance = relayRoom();
+  const first = await instance.fetch(request(`/approvals?room=${room}`, "PUT", { requestId: "req-4", title: "Allow" }));
+  const { viewToken } = await first.json();
+  assert.equal((await instance.fetch(request(`/a/${room}/${viewToken}/req-4/decide`, "POST", { decision: "allow" }))).status, 200);
+  assert.equal((await instance.fetch(request(`/approvals?room=${room}&all=1`, "DELETE"))).status, 200);
+  const listed = await instance.fetch(request(`/approvals?room=${room}`, "GET"));
+  assert.equal((await listed.json()).approvals[0].status, "allow");
+  const invalidTokenRoom = relayRoom();
+  invalidTokenRoom.state.storage.put("approvals:view", { token: "not-a-token" });
+  assert.equal((await invalidTokenRoom.fetch(new Request(`https://relay.example/a/${room}/${"ab".repeat(32)}`))).status, 401);
+});

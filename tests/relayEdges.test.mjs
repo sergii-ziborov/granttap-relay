@@ -67,3 +67,12 @@ test("CORS accepts empty requested headers and exposes vault revisions only to a
   const noOrigin = withApprovalCors(new Response("ok"), new Request("https://relay.example/a"), {}, true);
   assert.equal(noOrigin.headers.get("access-control-allow-origin"), null);
 });
+
+test("CORS accepts all documented request headers and development origins", async () => {
+  const vault = `https://relay.example/api/vault/${room.repeat(2)}`;
+  const response = await worker.fetch(new Request(vault, { method: "OPTIONS", headers: {
+    origin: "https://localhost:5173", "access-control-request-method": "POST", "access-control-request-headers": "accept,content-type,if-match,if-none-match",
+  } }), {});
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get("access-control-allow-origin"), "https://localhost:5173");
+});

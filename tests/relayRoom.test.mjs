@@ -134,7 +134,7 @@ test("room sends live envelopes and clears successfully flushed legacy queue ent
   assert.equal(state.values.has("q:phone"), false);
 });
 
-test("new socket supersedes stale sockets for the same device identity", async () => {
+test("same device identity may use monitor and hook sockets concurrently", async () => {
   const state = memoryState();
   const staleAttachment = { room, role: "phone", senderId: "phone-1" };
   const currentAttachment = { room };
@@ -142,7 +142,7 @@ test("new socket supersedes stale sockets for the same device identity", async (
   const stale = {
     deserializeAttachment: () => staleAttachment,
     close: () => { staleClosed += 1; },
-    send: () => assert.fail("superseded socket must not receive"),
+    send: () => {},
   };
   const current = {
     deserializeAttachment: () => currentAttachment,
@@ -161,8 +161,8 @@ test("new socket supersedes stale sockets for the same device identity", async (
 
   await relayRoom.webSocketMessage(current, JSON.stringify(hello));
 
-  assert.deepEqual(currentAttachment, { room, role: "phone", senderId: "phone-1" });
-  assert.equal(staleClosed, 1);
+  assert.deepEqual(currentAttachment, { room, role: "phone" });
+  assert.equal(staleClosed, 0);
 });
 
 test("room removes stale wake registrations after APNs response", async () => {

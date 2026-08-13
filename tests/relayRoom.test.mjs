@@ -78,6 +78,31 @@ test("room queues, acknowledges, and delivers opaque envelopes", async () => {
   await relayRoom.webSocketMessage(ws, JSON.stringify({ ...envelope, from: "phone" }));
 });
 
+test("offline transient envelopes never enter the reliable mailbox", async () => {
+  const state = memoryState();
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, {});
+  const attachment = { room, role: "machine" };
+  const socket = {
+    deserializeAttachment: () => attachment,
+    serializeAttachment: () => {},
+    send: () => {},
+  };
+  const transient = {
+    v: 1,
+    room,
+    from: "machine",
+    to: "phone",
+    senderId: "machine-1",
+    expiresAt: Date.now() + 60_000,
+    nonce: "A".repeat(32),
+    box: "A".repeat(24),
+  };
+
+  await relayRoom.webSocketMessage(socket, JSON.stringify(transient));
+
+  assert.equal(state.values.has("q:phone"), false);
+});
+
 test("room socket upgrades use pinned room authorization", async () => {
   const original = globalThis.WebSocketPair;
   const OriginalResponse = globalThis.Response;
@@ -294,6 +319,33 @@ test("room retains healthy APNs tokens and reliable queue entries", async () => 
   } finally { globalThis.fetch = originalFetch; }
   await relayRoom.flushTo("phone", { send: (raw) => assert.equal(raw, "reliable") });
   assert.equal(state.values.get("q:phone").length, 1);
+});
+
+test("queue flush never resurrects a reliable envelope acknowledged during send", async () => {
+  const first = {
+    raw: "first",
+    rawBytes: 5,
+    deliveryId: "delivery-1",
+    expiresAt: Date.now() + 60_000,
+  };
+  const second = {
+    raw: "second",
+    rawBytes: 6,
+    deliveryId: "delivery-2",
+    expiresAt: Date.now() + 60_000,
+  };
+  const state = memoryState(new Map([["q:phone", [first, second]]]));
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, {});
+  const socket = {
+    send(raw) {
+      if (raw !== "first") return;
+      state.values.set("q:phone", [second]);
+    },
+  };
+
+  await relayRoom.flushTo("phone", socket);
+
+  assert.deepEqual(state.values.get("q:phone"), [second]);
 });
 
 test("room removes one registered push device without dropping remaining devices", async () => {

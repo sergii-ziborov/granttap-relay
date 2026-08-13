@@ -208,11 +208,11 @@ test("queue flush preserves every unsent envelope after a socket failure", async
     { raw: "two", deliveryId: "delivery-2", expiresAt: Date.now() + 60_000 },
     { raw: "three", deliveryId: "delivery-3", expiresAt: Date.now() + 60_000 },
   ];
-  let saved = [];
+  const values = new Map([["q:phone", queued]]);
   const room = new GrantTapRoom({
     storage: {
-      get: async () => queued,
-      put: async (_key, value) => { saved = value; },
+      get: async (key) => values.get(key),
+      put: async (key, value) => values.set(key, value),
       delete: async () => assert.fail("reliable queue must remain"),
     },
   }, {});
@@ -224,7 +224,7 @@ test("queue flush preserves every unsent envelope after a socket failure", async
     },
   });
   assert.equal(sends, 2);
-  assert.deepEqual(saved.map((item) => item.deliveryId), [
+  assert.deepEqual(values.get("q:phone").map((item) => item.deliveryId), [
     "delivery-1",
     "delivery-2",
     "delivery-3",

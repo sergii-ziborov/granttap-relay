@@ -51,7 +51,7 @@ export class GrantTapRoom {
       await this.flushTo(envelope.from, ws);
     } else if (known.role !== envelope.from) return;
     const targets = this.targetsFor(ws, envelope);
-    if (envelope.to !== "all" && (targets.length === 0 || envelope.deliveryId)) {
+    if (envelope.to !== "all" && envelope.deliveryId) {
       await this.queue(envelope.to, raw, envelope.deliveryId, envelope.expiresAt);
     }
     for (const target of targets) {
@@ -93,6 +93,16 @@ export class GrantTapRoom {
     if (!queue?.length) return;
     const now = Date.now();
     const pending = queue.filter((item) => (typeof item === "string" ? now + DEFAULT_QUEUE_TTL_MS : item.expiresAt) > now);
+    // Reliable rows already live in storage until their decrypt ACK removes
+    // them. Rewriting the pre-send snapshot here races that ACK and resurrects
+    // the very row the recipient confirmed, causing duplicate chat events and
+    // an immortal backlog ahead of fresh catalog snapshots.
+    if (pending.every((item) => typeof item !== "string" && item.deliveryId)) {
+      for (const item of pending) {
+        try { ws.send(item.raw); } catch { break; }
+      }
+      return;
+    }
     const remaining = [];
     for (let index = 0; index < pending.length; index += 1) {
       const item = pending[index];

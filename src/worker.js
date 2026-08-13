@@ -38,9 +38,9 @@ import {
 } from "./approvals.js";
 import { handleVaultApi } from "./vaultApi.js";
 import { vaultHtmlResponse } from "./vaultPage.js";
+export { GrantTapWebPairing } from "./webPairing.js";
 
 const PAIR_TTL_MS = 15 * 60 * 1000;
-const WEB_PAIR_TTL_MS = 5 * 60 * 1000;
 const HOLD_LIMIT = 100;
 const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
 const PUSH_TOKEN_LIMIT = 8;
@@ -52,7 +52,6 @@ const MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024;
 const MAX_QUEUE_BYTES = 1_800_000;
 const MAX_PAIRING_BODY_BYTES = 40_000;
 const MAX_PUSH_BODY_BYTES = 4_096;
-const MAX_WEB_PAIR_BODY_BYTES = 32_000;
 const MAX_ENVELOPE_TTL_MS = 25 * 60 * 60 * 1000;
 const DEFAULT_APPROVAL_WEB_ORIGINS = new Set([
   "https://granttap.com",
@@ -836,81 +835,6 @@ export class GrantTapCodes {
 
   async alarm() {
     await this.state.storage.deleteAll();
-  }
-}
-
-export class GrantTapWebPairing {
-  constructor(state) {
-    this.state = state;
-  }
-
-  async fetch(request) {
-    const challenge = /^\/web-pair\/([a-f0-9]{32})$/.exec(new URL(request.url).pathname)?.[1];
-    if (!challenge) return json({ error: "bad challenge" }, 400);
-    const existing = await this.state.storage.get("challenge");
-    const now = Date.now();
-
-    if (request.method === "PUT") {
-      if (existing?.expiresAt > now) return json({ error: "challenge occupied" }, 409);
-      let body;
-      try { body = await readJsonLimited(request, MAX_WEB_PAIR_BODY_BYTES); } catch { body = null; }
-      const origin = exactWebOrigin(body?.origin);
-      if (!origin || request.headers.get("Origin") !== origin) {
-        return json({ error: "exact allowed origin required" }, 403);
-      }
-      await this.state.storage.put("challenge", {
-        origin,
-        expiresAt: now + WEB_PAIR_TTL_MS,
-        sealed: null,
-      });
-      await this.state.storage.setAlarm(now + WEB_PAIR_TTL_MS);
-      return json({ ok: true, expiresInSec: WEB_PAIR_TTL_MS / 1000 }, 201);
-    }
-
-    if (!existing || existing.expiresAt <= now) {
-      if (existing) await this.state.storage.deleteAll();
-      return json({ error: "unknown or expired challenge" }, 404);
-    }
-
-    if (request.method === "POST") {
-      if (existing.sealed) return json({ error: "challenge already approved" }, 409);
-      let body;
-      try { body = await readJsonLimited(request, MAX_WEB_PAIR_BODY_BYTES); } catch { body = null; }
-      if (body?.origin !== existing.origin
-          || typeof body?.nonce !== "string" || !/^[A-Za-z0-9_-]{32}$/.test(body.nonce)
-          || typeof body?.box !== "string" || body.box.length < 1 || body.box.length > 24_000
-          || !/^[A-Za-z0-9_-]+$/.test(body.box)) {
-        return json({ error: "origin-bound ciphertext required" }, 403);
-      }
-      await this.state.storage.put("challenge", { ...existing, sealed: body });
-      return json({ ok: true });
-    }
-
-    if (request.method === "GET") {
-      if (request.headers.get("Origin") !== existing.origin) {
-        return json({ error: "origin mismatch" }, 403);
-      }
-      if (!existing.sealed) return json({ status: "pending" }, 202);
-      const sealed = existing.sealed;
-      await this.state.storage.deleteAll();
-      return json(sealed);
-    }
-    return json({ error: "method not allowed" }, 405);
-  }
-
-  async alarm() { await this.state.storage.deleteAll(); }
-}
-
-function exactWebOrigin(value) {
-  if (typeof value !== "string") return null;
-  try {
-    const url = new URL(value);
-    const local = ["localhost", "127.0.0.1"].includes(url.hostname);
-    if ((url.protocol !== "https:" && !(local && url.protocol === "http:"))
-        || url.origin !== value || url.username || url.password) return null;
-    return url.origin;
-  } catch {
-    return null;
   }
 }
 

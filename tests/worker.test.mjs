@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import worker, {
   GrantTapCodes,
-  GrantTapWebPairing,
   GrantTapRoom,
   pushPayload,
   validDeviceToken,
@@ -10,6 +9,7 @@ import worker, {
   validRoom,
   validRoomCredential,
 } from "../src/worker.js";
+import { GrantTapWebPairing } from "../src/webPairing.js";
 
 test("health endpoint is available without bindings", async () => {
   const response = await worker.fetch(new Request("https://relay.example/health"), {});

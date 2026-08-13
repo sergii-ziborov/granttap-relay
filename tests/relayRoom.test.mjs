@@ -134,6 +134,37 @@ test("room sends live envelopes and clears successfully flushed legacy queue ent
   assert.equal(state.values.has("q:phone"), false);
 });
 
+test("new socket supersedes stale sockets for the same device identity", async () => {
+  const state = memoryState();
+  const staleAttachment = { room, role: "phone", senderId: "phone-1" };
+  const currentAttachment = { room };
+  let staleClosed = 0;
+  const stale = {
+    deserializeAttachment: () => staleAttachment,
+    close: () => { staleClosed += 1; },
+    send: () => assert.fail("superseded socket must not receive"),
+  };
+  const current = {
+    deserializeAttachment: () => currentAttachment,
+    serializeAttachment: (next) => Object.assign(currentAttachment, next),
+    close: () => {},
+    send: () => {},
+  };
+  const relayRoom = new GrantTapRoom({
+    ...state,
+    getWebSockets: () => [stale, current],
+  }, {});
+  const hello = {
+    v: 1, room, from: "phone", to: "machine", senderId: "phone-1",
+    nonce: "A".repeat(32), box: "A".repeat(24),
+  };
+
+  await relayRoom.webSocketMessage(current, JSON.stringify(hello));
+
+  assert.deepEqual(currentAttachment, { room, role: "phone", senderId: "phone-1" });
+  assert.equal(staleClosed, 1);
+});
+
 test("room removes stale wake registrations after APNs response", async () => {
   const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   const pem = Buffer.from(new Uint8Array(await crypto.subtle.exportKey("pkcs8", key.privateKey))).toString("base64");

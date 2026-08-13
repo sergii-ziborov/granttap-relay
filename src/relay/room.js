@@ -47,7 +47,12 @@ export class GrantTapRoom {
     }
     if (!validEnvelope(envelope, known.room, Date.now())) return;
     if (!known.role) {
-      ws.serializeAttachment({ room: known.room, role: envelope.from });
+      this.replacePriorDeviceSocket(ws, envelope.from, envelope.senderId);
+      ws.serializeAttachment({
+        room: known.room,
+        role: envelope.from,
+        senderId: envelope.senderId,
+      });
       await this.flushTo(envelope.from, ws);
     } else if (known.role !== envelope.from) return;
     const targets = this.targetsFor(ws, envelope);
@@ -65,6 +70,15 @@ export class GrantTapRoom {
       const attachment = socket.deserializeAttachment();
       return envelope.to === "all" || attachment?.role === envelope.to;
     });
+  }
+
+  replacePriorDeviceSocket(current, role, senderId) {
+    for (const socket of this.state.getWebSockets()) {
+      if (socket === current) continue;
+      const attachment = socket.deserializeAttachment();
+      if (attachment?.role !== role || attachment?.senderId !== senderId) continue;
+      try { socket.close(1000, "replaced by a newer connection"); } catch { /* stale */ }
+    }
   }
 
   async queue(role, raw, deliveryId, expiresAt) {

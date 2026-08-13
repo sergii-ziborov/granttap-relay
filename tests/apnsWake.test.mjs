@@ -35,3 +35,21 @@ test("wake payload is alert plus content-available and has no relay task fields"
   assert.equal(payload.granttapWake, true);
   assert.doesNotMatch(JSON.stringify(payload), /command|prompt|sessionId|ciphertext/i);
 });
+
+test("APNs accepts a successful response and caches the provider token", async () => {
+  const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const encoded = Buffer.from(new Uint8Array(await crypto.subtle.exportKey("pkcs8", key.privateKey))).toString("base64");
+  const env = { APNS_TEAM_ID: "TEAM2", APNS_KEY_ID: "KEY2", APNS_PRIVATE_KEY: `-----BEGIN PRIVATE KEY-----\n${encoded}\n-----END PRIVATE KEY-----` };
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(null, { status: calls === 1 ? 200 : 410 });
+  };
+  try {
+    assert.deepEqual(await sendAPNs(env, { environment: "production", token, bundleId: "com.ziborov.granttap" }), { ok: true, stale: false });
+    assert.deepEqual(await sendAPNs(env, { environment: "production", token, bundleId: "com.ziborov.granttap" }), { ok: false, stale: true });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

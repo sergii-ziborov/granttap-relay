@@ -117,3 +117,101 @@ test("room helper callbacks and wake no-op preserve relay-only state", async () 
   relayRoom.webSocketClose();
   relayRoom.webSocketError();
 });
+
+test("room sends live envelopes and clears successfully flushed legacy queue entries", async () => {
+  const state = memoryState();
+  const senderAttachment = { room, role: "machine" };
+  const recipientAttachment = { room, role: "phone" };
+  const sent = [];
+  const sender = { deserializeAttachment: () => senderAttachment, serializeAttachment: () => {}, send: () => {} };
+  const recipient = { deserializeAttachment: () => recipientAttachment, send: (raw) => sent.push(raw) };
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [sender, recipient] }, {});
+  const envelope = { v: 1, room, from: "machine", to: "phone", senderId: "machine-1", nonce: "A".repeat(32), box: "A".repeat(24) };
+  await relayRoom.webSocketMessage(sender, JSON.stringify(envelope));
+  assert.equal(sent.length, 1);
+  state.values.set("q:phone", ["legacy"]);
+  await relayRoom.flushTo("phone", { send: (raw) => sent.push(raw) });
+  assert.equal(state.values.has("q:phone"), false);
+});
+
+test("room removes stale wake registrations after APNs response", async () => {
+  const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const pem = Buffer.from(new Uint8Array(await crypto.subtle.exportKey("pkcs8", key.privateKey))).toString("base64");
+  const state = memoryState(new Map([["push:tokens", [{ token, environment: "sandbox", bundleId: "com.ziborov.granttap" }]]]));
+  const relayRoom = new GrantTapRoom(state, { APNS_TEAM_ID: "ROOM", APNS_KEY_ID: "ROOMKEY", APNS_PRIVATE_KEY: `-----BEGIN PRIVATE KEY-----\n${pem}\n-----END PRIVATE KEY-----` });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(null, { status: 410 });
+  try {
+    await relayRoom.sendWakePush();
+    assert.equal(state.values.has("push:tokens"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("room ignores stale live sockets and broadcasts opaque envelopes to every role", async () => {
+  const state = memoryState();
+  const attachment = { room, role: "machine" };
+  const sender = { deserializeAttachment: () => attachment, serializeAttachment: () => {}, send: () => {} };
+  const stale = { deserializeAttachment: () => ({ room, role: "phone" }), send: () => { throw new Error("closed"); } };
+  const received = [];
+  const observer = { deserializeAttachment: () => ({ room, role: "machine" }), send: (raw) => received.push(raw) };
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [sender, stale, observer] }, {});
+  const envelope = { v: 1, room, from: "machine", to: "all", senderId: "machine-1", nonce: "A".repeat(32), box: "A".repeat(24) };
+  await relayRoom.webSocketMessage(sender, JSON.stringify(envelope));
+  assert.equal(received.length, 1);
+  await relayRoom.flushTo("phone", { send: () => assert.fail("empty queue must not send") });
+});
+
+test("room retains acknowledged queue leftovers and bounds malformed queue inputs", async () => {
+  const state = memoryState(new Map([["q:phone", [{ deliveryId: "one" }, { deliveryId: "two" }]]]));
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, {});
+  await relayRoom.acknowledge("phone", "one");
+  assert.deepEqual(state.values.get("q:phone"), [{ deliveryId: "two" }]);
+  await relayRoom.queue("phone", "A".repeat(1_800_001));
+  assert.equal(state.values.get("q:phone").length, 1);
+  state.values.set("q:machine", [{ raw: "expired", expiresAt: Date.now() - 1 }, { raw: "", expiresAt: Date.now() + 1 }]);
+  await relayRoom.flushTo("machine", { send: () => assert.fail("expired and empty entries must not send") });
+  assert.equal(state.values.has("q:machine"), false);
+});
+
+test("room ignores invalid socket messages and rejects invalid upgrade room metadata", async () => {
+  const state = memoryState();
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, {});
+  const socket = { deserializeAttachment: () => ({}), serializeAttachment: () => {}, send: () => {} };
+  await relayRoom.webSocketMessage(socket, null);
+  await relayRoom.webSocketMessage(socket, JSON.stringify({ type: "relay.ack", deliveryId: "id" }));
+  await relayRoom.webSocketMessage(socket, JSON.stringify({ v: 1 }));
+  assert.equal((await relayRoom.fetch(new Request("https://relay.example/?room=bad", { headers: { upgrade: "websocket" } }))).status, 400);
+  const invalidStatus = await relayRoom.fetch(new Request(`https://relay.example/push/status?room=${room}`, { headers: { authorization: `Bearer ${"00".repeat(32)}` } }));
+  assert.equal(invalidStatus.status, 401);
+});
+
+test("room bounds device registrations and queued delivery count", async () => {
+  const initial = Array.from({ length: 8 }, (_, index) => ({ token: `${index.toString(16).padStart(2, "0")}`.repeat(32), environment: "sandbox", bundleId: "com.ziborov.granttap" }));
+  const state = memoryState(new Map([["push:tokens", initial]]));
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, {});
+  const register = new Request(`https://relay.example/push/register?room=${room}`, { method: "POST", headers: { authorization: `Bearer ${credential}`, "content-type": "application/json" }, body: JSON.stringify({ token, environment: "production", bundleId: "com.ziborov.granttap" }) });
+  assert.equal((await relayRoom.fetch(register)).status, 200);
+  assert.equal(state.values.get("push:tokens").length, 8);
+  for (let index = 0; index < 101; index += 1) await relayRoom.queue("phone", `message-${index}`);
+  assert.equal(state.values.get("q:phone").length, 100);
+  await relayRoom.sendWakePush();
+});
+
+test("room keeps non-stale wake devices and rejects a role switch", async () => {
+  const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const pem = Buffer.from(new Uint8Array(await crypto.subtle.exportKey("pkcs8", key.privateKey))).toString("base64");
+  const state = memoryState(new Map([["push:tokens", [{ token, environment: "production", bundleId: "com.ziborov.granttap" }]]]));
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, { APNS_TEAM_ID: "KEEP", APNS_KEY_ID: "KEEPKEY", APNS_PRIVATE_KEY: `-----BEGIN PRIVATE KEY-----\n${pem}\n-----END PRIVATE KEY-----` });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(null, { status: 200 });
+  try {
+    await relayRoom.sendWakePush();
+    assert.equal(state.values.get("push:tokens").length, 1);
+  } finally { globalThis.fetch = originalFetch; }
+  const attachment = { room, role: "machine" };
+  const ws = { deserializeAttachment: () => attachment, serializeAttachment: () => {}, send: () => {} };
+  await relayRoom.webSocketMessage(ws, JSON.stringify({ v: 1, room, from: "phone", to: "machine", senderId: "phone-1", nonce: "A".repeat(32), box: "A".repeat(24) }));
+  assert.equal(state.values.has("q:machine"), false);
+});

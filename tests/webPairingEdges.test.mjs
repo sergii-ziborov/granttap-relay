@@ -55,4 +55,7 @@ test("web pairing rejects noncanonical origins and oversized registration bodies
   const oversized = pairingState();
   const oversizedPairing = new GrantTapWebPairing(oversized);
   assert.equal((await oversizedPairing.fetch(new Request(url, { method: "PUT", headers: { origin: "https://granttap.com", "content-length": "32001" }, body: JSON.stringify({ origin: "https://granttap.com" }) }))).status, 403);
+  const credentialed = pairingState();
+  const credentialedPairing = new GrantTapWebPairing(credentialed);
+  assert.equal((await credentialedPairing.fetch(new Request(url, { method: "PUT", headers: { origin: "https://user:pass@granttap.com" }, body: JSON.stringify({ origin: "https://user:pass@granttap.com" }) }))).status, 403);
 });

@@ -244,3 +244,33 @@ test("room accepts wake envelopes and prunes expired queued records before retry
   assert.equal(state.values.get("q:phone").length, 1);
   assert.equal(state.values.get("q:phone")[0].raw.includes("expired"), false);
 });
+
+test("room retains healthy APNs tokens and reliable queue entries", async () => {
+  const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const pem = Buffer.from(new Uint8Array(await crypto.subtle.exportKey("pkcs8", key.privateKey))).toString("base64");
+  const healthy = "aa".repeat(32);
+  const stale = "bb".repeat(32);
+  const state = memoryState(new Map([
+    ["push:tokens", [{ token: healthy, environment: "sandbox", bundleId: "com.ziborov.granttap" }, { token: stale, environment: "sandbox", bundleId: "com.ziborov.granttap" }]],
+    ["q:phone", [{ raw: "reliable", deliveryId: "delivery-1", expiresAt: Date.now() + 60_000 }]],
+  ]));
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, { APNS_TEAM_ID: "MIX", APNS_KEY_ID: "MIXKEY", APNS_PRIVATE_KEY: `-----BEGIN PRIVATE KEY-----\n${pem}\n-----END PRIVATE KEY-----` });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => new Response(null, { status: String(url).includes(stale) ? 410 : 200 });
+  try {
+    await relayRoom.sendWakePush();
+    assert.deepEqual(state.values.get("push:tokens").map((item) => item.token), [healthy]);
+  } finally { globalThis.fetch = originalFetch; }
+  await relayRoom.flushTo("phone", { send: (raw) => assert.equal(raw, "reliable") });
+  assert.equal(state.values.get("q:phone").length, 1);
+});
+
+test("room removes one registered push device without dropping remaining devices", async () => {
+  const first = "11".repeat(32);
+  const second = "22".repeat(32);
+  const state = memoryState(new Map([["push:tokens", [{ token: first, environment: "sandbox", bundleId: "com.ziborov.granttap" }, { token: second, environment: "production", bundleId: "com.ziborov.granttap" }]]]));
+  const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, {});
+  const request = new Request(`https://relay.example/push/register?room=${room}`, { method: "DELETE", headers: { authorization: `Bearer ${credential}`, "content-type": "application/json" }, body: JSON.stringify({ token: first, environment: "sandbox", bundleId: "com.ziborov.granttap" }) });
+  assert.equal((await relayRoom.fetch(request)).status, 200);
+  assert.deepEqual(state.values.get("push:tokens").map((item) => item.token), [second]);
+});

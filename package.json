@@ -8,6 +8,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "node --test tests/*.test.mjs",
+    "test:vault": "node --test --experimental-test-coverage --test-coverage-include=src/vaultCrypto.js --test-coverage-include=src/vaultLogin.js --test-coverage-include=src/vaultStore.js --test-coverage-include=src/vaultApi.js tests/vault*.test.mjs",
     "check": "node --check src/worker.js && wrangler deploy --dry-run"
   },
   "devDependencies": {

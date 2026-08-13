@@ -8,13 +8,39 @@
  *   wss://<host>/?room=<room>   WebSocket per pairing room (one DO per room)
  *   PUT/GET /pair/<MAILBOX>     encrypted pairing blob (single use, 15 min)
  *   GET /health
+ *   GET /  and /vault               phone-code vault login (GTW1 + AES-GCM)
+ *   GET/PUT/DELETE /api/vault/:id   revisioned ciphertext vault (DO + KV mirror)
+ *   PUT/GET/DELETE /approvals?room=  machine-managed visible Allow cards
+ *   GET /a/<room>/<viewToken>       browser Accept/Decline page (not chat)
  *
  * The room id rides in the URL because a Durable Object must be chosen before
  * the socket upgrades. WebSocket Hibernation keeps idle rooms free: a paired
  * machine can stay connected all day without billing for duration.
+ *
+ * Approval cards are a deliberate expiring cleartext surface (command summary
+ * + danger level) so Accept/Decline is not buried in notify text. The page URL
+ * itself is a durable capability and must be protected like a secret.
  */
 
+import {
+  APPROVALS_ITEMS_KEY,
+  APPROVALS_VIEW_KEY,
+  MAX_APPROVAL_BODY_BYTES,
+  applyDecision,
+  approvalsPageHtml,
+  htmlResponse,
+  parseApprovalCard,
+  pruneApprovals,
+  publicCard,
+  upsertApproval,
+  validRequestId,
+  validViewToken,
+} from "./approvals.js";
+import { handleVaultApi } from "./vaultApi.js";
+import { vaultHtmlResponse } from "./vaultPage.js";
+
 const PAIR_TTL_MS = 15 * 60 * 1000;
+const WEB_PAIR_TTL_MS = 5 * 60 * 1000;
 const HOLD_LIMIT = 100;
 const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
 const PUSH_TOKEN_LIMIT = 8;
@@ -26,7 +52,13 @@ const MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024;
 const MAX_QUEUE_BYTES = 1_800_000;
 const MAX_PAIRING_BODY_BYTES = 40_000;
 const MAX_PUSH_BODY_BYTES = 4_096;
+const MAX_WEB_PAIR_BODY_BYTES = 32_000;
 const MAX_ENVELOPE_TTL_MS = 25 * 60 * 60 * 1000;
+const DEFAULT_APPROVAL_WEB_ORIGINS = new Set([
+  "https://granttap.com",
+  "https://www.granttap.com",
+  "https://granttap-vault.lovable.app",
+]);
 
 let cachedProviderToken = null;
 
@@ -46,12 +78,43 @@ export default {
 
     if (url.pathname === "/health") return json({ ok: true });
 
+    // WebSocket upgrades are GET with Upgrade: websocket. The vault HTML on `/`
+    // must NOT steal those — Mac/phone pairings use wss://host/?room=… and a
+    // vault response (HTTP 200 HTML) looks like "relay up" nowhere: clients
+    // fail the handshake and sessions.status never reaches the phone.
+    const isWebSocketUpgrade =
+      (request.headers.get("Upgrade") ?? "").toLowerCase() === "websocket";
+
+    if ((url.pathname === "/" || url.pathname === "/vault") && !isWebSocketUpgrade) {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return json({ error: "method not allowed" }, 405);
+      }
+      return vaultHtmlResponse();
+    }
+
+    if (url.pathname.startsWith("/api/vault/")) {
+      if (request.method === "OPTIONS") return vaultPreflight(request, env);
+      const vaultId = /^\/api\/vault\/([a-f0-9]{64})$/.exec(url.pathname)?.[1];
+      const response = vaultId && env?.VAULTS
+        ? await env.VAULTS.get(env.VAULTS.idFromName(vaultId)).fetch(request)
+        : await handleVaultApi(request, env);
+      return withVaultCors(response, request, env);
+    }
+
     const pair = /^\/pair\/([a-f0-9]{32})$/.exec(url.pathname);
     if (pair) {
       // One DO per unguessable mailbox gives atomic single-use reads without a
       // global hot object, and lets its alarm reclaim expired ciphertext.
       const stub = env.CODES.get(env.CODES.idFromName(pair[1]));
       return stub.fetch(request);
+    }
+
+    const webPair = /^\/web-pair\/([a-f0-9]{32})$/.exec(url.pathname);
+    if (webPair) {
+      if (request.method === "OPTIONS") return vaultPreflight(request, env);
+      if (!env?.WEB_CODES) return withVaultCors(json({ error: "web pairing unavailable" }, 503), request, env);
+      const stub = env.WEB_CODES.get(env.WEB_CODES.idFromName(webPair[1]));
+      return withVaultCors(await stub.fetch(request), request, env);
     }
 
     if (url.pathname === "/push/register" || url.pathname === "/push/status") {
@@ -61,7 +124,26 @@ export default {
       return stub.fetch(request);
     }
 
-    if ((request.headers.get("Upgrade") ?? "").toLowerCase() === "websocket") {
+    if (url.pathname === "/approvals") {
+      const room = url.searchParams.get("room");
+      if (!validRoom(room)) return json({ error: "valid room query parameter required" }, 400);
+      const stub = env.ROOM.get(env.ROOM.idFromName(room));
+      return stub.fetch(request);
+    }
+
+    // Visible approval page: /a/<room>/<viewToken>[/json|/decide]
+    const approvalPath = /^\/a\/([a-f0-9]{16,64})\/([a-f0-9]{64})(?:\/(json)|\/([A-Za-z0-9._-]{4,180})\/decide)?$/.exec(
+      url.pathname,
+    );
+    if (approvalPath) {
+      const room = approvalPath[1];
+      if (request.method === "OPTIONS") return approvalPreflight(request, env);
+      const stub = env.ROOM.get(env.ROOM.idFromName(room));
+      const response = await stub.fetch(request);
+      return withApprovalCors(response, request, env);
+    }
+
+    if (isWebSocketUpgrade) {
       const room = url.searchParams.get("room");
       if (!validRoom(room)) return json({ error: "valid room query parameter required" }, 400);
       const stub = env.ROOM.get(env.ROOM.idFromName(room));
@@ -71,6 +153,113 @@ export default {
     return json({ error: "not found" }, 404);
   },
 };
+
+function approvalPreflight(request, env) {
+  const origin = allowedApprovalOrigin(request, env);
+  if (!origin) return json({ error: "origin not allowed" }, 403);
+  const method = (request.headers.get("Access-Control-Request-Method") ?? "").toUpperCase();
+  if (method !== "GET" && method !== "POST") {
+    return withApprovalCors(json({ error: "method not allowed" }, 405), request, env);
+  }
+  const requestedHeaders = (request.headers.get("Access-Control-Request-Headers") ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (requestedHeaders.some((value) => value !== "content-type" && value !== "accept")) {
+    return withApprovalCors(json({ error: "headers not allowed" }, 403), request, env);
+  }
+  return withApprovalCors(new Response(null, {
+    status: 204,
+    headers: { "cache-control": "no-store" },
+  }), request, env, true);
+}
+
+function vaultPreflight(request, env) {
+  const origin = allowedApprovalOrigin(request, env);
+  if (!origin) return json({ error: "origin not allowed" }, 403);
+  const method = (request.headers.get("Access-Control-Request-Method") ?? "").toUpperCase();
+  if (!["GET", "PUT", "POST", "DELETE"].includes(method)) {
+    return withApprovalCors(json({ error: "method not allowed" }, 405), request, env);
+  }
+  const requestedHeaders = (request.headers.get("Access-Control-Request-Headers") ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  const allowedHeaders = new Set(["content-type", "accept", "if-match", "if-none-match"]);
+  if (requestedHeaders.some((value) => !allowedHeaders.has(value))) {
+    return withVaultCors(json({ error: "headers not allowed" }, 403), request, env);
+  }
+  return withVaultCors(new Response(null, {
+    status: 204,
+    headers: { "cache-control": "no-store" },
+  }), request, env, true);
+}
+
+function withVaultCors(response, request, env, preflight = false) {
+  const next = withApprovalCors(response, request, env, preflight);
+  if (!allowedApprovalOrigin(request, env)) return next;
+  next.headers.set("Access-Control-Expose-Headers", "ETag");
+  if (preflight) {
+    next.headers.set("Access-Control-Allow-Methods", "GET, PUT, POST, DELETE, OPTIONS");
+    next.headers.set("Access-Control-Allow-Headers", "Content-Type, Accept, If-Match, If-None-Match");
+  }
+  return next;
+}
+
+function withApprovalCors(response, request, env, preflight = false) {
+  const origin = allowedApprovalOrigin(request, env);
+  if (!origin) return response;
+  const next = new Response(response.body, response);
+  next.headers.set("Access-Control-Allow-Origin", origin);
+  appendVary(next.headers, "Origin");
+  if (preflight) {
+    next.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    next.headers.set("Access-Control-Allow-Headers", "Content-Type, Accept");
+    next.headers.set("Access-Control-Max-Age", "600");
+  }
+  return next;
+}
+
+function allowedApprovalOrigin(request, env) {
+  const raw = request.headers.get("Origin");
+  if (!raw) return null;
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.origin !== raw || parsed.username || parsed.password) return null;
+  const requestOrigin = new URL(request.url).origin;
+  if (parsed.origin === requestOrigin || DEFAULT_APPROVAL_WEB_ORIGINS.has(parsed.origin)) {
+    return parsed.origin;
+  }
+  if ((parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1")
+      && (parsed.protocol === "http:" || parsed.protocol === "https:")) {
+    return parsed.origin;
+  }
+  const configured = String(env?.GRANTTAP_WEB_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return configured.some((value) => {
+    try {
+      const candidate = new URL(value);
+      return candidate.origin === value && candidate.origin === parsed.origin;
+    } catch {
+      return false;
+    }
+  }) ? parsed.origin : null;
+}
+
+function appendVary(headers, value) {
+  const existing = (headers.get("Vary") ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!existing.some((item) => item.toLowerCase() === value.toLowerCase())) existing.push(value);
+  headers.set("Vary", existing.join(", "));
+}
 
 // ------------------------------------------------------------------ the room
 
@@ -84,6 +273,8 @@ export class GrantTapRoom {
     const url = new URL(request.url);
     if (url.pathname === "/push/register") return this.handlePushRegistration(request);
     if (url.pathname === "/push/status") return this.handlePushStatus(request);
+    if (url.pathname === "/approvals") return this.handleApprovalsApi(request);
+    if (url.pathname.startsWith("/a/")) return this.handleApprovalsPage(request);
     if ((request.headers.get("Upgrade") ?? "").toLowerCase() !== "websocket") {
       return json({ error: "expected websocket" }, 426);
     }
@@ -284,6 +475,158 @@ export class GrantTapRoom {
 
   webSocketClose() {}
   webSocketError() {}
+
+  /** Machine: publish / list / cancel visible approvals (Bearer room credential). */
+  async handleApprovalsApi(request) {
+    const url = new URL(request.url);
+    const room = url.searchParams.get("room");
+    if (!validRoom(room)) return json({ error: "valid room query parameter required" }, 400);
+    const authOk = await this.requireRoomAuth(request);
+    if (authOk) return authOk;
+
+    if (request.method === "GET") {
+      const items = pruneApprovals(await this.state.storage.get(APPROVALS_ITEMS_KEY));
+      const view = await this.ensureViewToken();
+      return json({
+        ok: true,
+        pageUrl: approvalsPageUrl(url, room, view.token),
+        viewToken: view.token,
+        approvals: items.map(publicCard),
+      });
+    }
+
+    if (request.method === "PUT" || request.method === "POST") {
+      let body;
+      try {
+        body = await readJsonLimited(request, MAX_APPROVAL_BODY_BYTES);
+      } catch {
+        return json({ error: "bounded JSON body required" }, 400);
+      }
+      const parsed = parseApprovalCard(body);
+      if (parsed.error) return json({ error: parsed.error }, 400);
+      const items = upsertApproval(await this.state.storage.get(APPROVALS_ITEMS_KEY), parsed.card);
+      await this.state.storage.put(APPROVALS_ITEMS_KEY, items);
+      const view = await this.ensureViewToken();
+      return json({
+        ok: true,
+        pageUrl: approvalsPageUrl(url, room, view.token),
+        viewToken: view.token,
+        approval: publicCard(parsed.card),
+      });
+    }
+
+    if (request.method === "DELETE") {
+      const requestId = url.searchParams.get("requestId");
+      const cancelAll = url.searchParams.get("all") === "1";
+      let items = pruneApprovals(await this.state.storage.get(APPROVALS_ITEMS_KEY));
+      if (cancelAll) {
+        items = items.filter((item) => item.status !== "pending");
+      } else if (validRequestId(requestId)) {
+        items = items.filter((item) => item.requestId !== requestId);
+      } else {
+        return json({ error: "requestId or all=1 required" }, 400);
+      }
+      if (items.length) await this.state.storage.put(APPROVALS_ITEMS_KEY, items);
+      else await this.state.storage.delete(APPROVALS_ITEMS_KEY);
+      return json({ ok: true });
+    }
+
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  /** Browser: HTML page / JSON / Accept-Decline via view token (no room Bearer). */
+  async handleApprovalsPage(request) {
+    const url = new URL(request.url);
+    const match = /^\/a\/([a-f0-9]{16,64})\/([a-f0-9]{64})(?:\/(json)|\/([A-Za-z0-9._-]{4,180})\/decide)?$/.exec(
+      url.pathname,
+    );
+    if (!match) return json({ error: "not found" }, 404);
+    const room = match[1];
+    const viewToken = match[2];
+    const isJson = match[3] === "json";
+    const decideId = match[4];
+    if (!validViewToken(viewToken)) return json({ error: "invalid view token" }, 401);
+
+    const stored = await this.state.storage.get(APPROVALS_VIEW_KEY);
+    if (!stored?.token || !constantTimeEqual(stored.token, viewToken)) {
+      return json({ error: "invalid view token" }, 401);
+    }
+
+    if (decideId) {
+      if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
+      let body;
+      try {
+        body = await readJsonLimited(request, MAX_APPROVAL_BODY_BYTES);
+      } catch {
+        return json({ error: "bounded JSON body required" }, 400);
+      }
+      const decision = body?.decision === "allow" || body?.decision === "deny"
+        ? body.decision
+        : null;
+      if (!decision) return json({ error: "decision must be allow or deny" }, 400);
+      if (!validRequestId(decideId)) return json({ error: "invalid requestId" }, 400);
+      const applied = applyDecision(
+        await this.state.storage.get(APPROVALS_ITEMS_KEY),
+        decideId,
+        decision,
+        "web",
+      );
+      if (!applied.found) return json({ error: "approval not pending" }, 404);
+      await this.state.storage.put(APPROVALS_ITEMS_KEY, applied.items);
+      return json({ ok: true, requestId: decideId, decision });
+    }
+
+    const items = pruneApprovals(await this.state.storage.get(APPROVALS_ITEMS_KEY));
+    if (isJson) {
+      if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
+      return json({ ok: true, approvals: items.map(publicCard) });
+    }
+    if (request.method !== "GET") return json({ error: "method not allowed" }, 405);
+    return htmlResponse(approvalsPageHtml(room, viewToken));
+  }
+
+  async requireRoomAuth(request) {
+    const auth = bearer(request);
+    if (!validRoomCredential(auth)) return json({ error: "room credential required" }, 401);
+    const digest = await sha256(auth);
+    const expected = await this.state.storage.get(PUSH_AUTH_KEY);
+    if (expected && !constantTimeEqual(digest, expected)) {
+      return json({ error: "invalid room credential" }, 401);
+    }
+    if (!expected) await this.state.storage.put(PUSH_AUTH_KEY, digest);
+    return null;
+  }
+
+  async ensureViewToken() {
+    const existing = await this.state.storage.get(APPROVALS_VIEW_KEY);
+    if (existing?.token && validViewToken(existing.token)) return existing;
+    const token = randomHex(32);
+    const view = { token, createdAt: Date.now() };
+    await this.state.storage.put(APPROVALS_VIEW_KEY, view);
+    return view;
+  }
+}
+
+/** Strongly ordered CAS coordinator; only opaque vault envelopes enter storage. */
+export class GrantTapVault {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  fetch(request) {
+    return handleVaultApi(request, this.env, this.state.storage);
+  }
+}
+
+function approvalsPageUrl(url, room, viewToken) {
+  return `${url.origin}/a/${room}/${viewToken}`;
+}
+
+function randomHex(bytes) {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return [...arr].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 function bearer(request) {
@@ -372,10 +715,17 @@ function apnsConfigured(env) {
   return Boolean(env?.APNS_TEAM_ID && env?.APNS_KEY_ID && env?.APNS_PRIVATE_KEY);
 }
 
+/** Alert + content-available: visible when backgrounded/killed (silent alone cannot relaunch after force-quit). No task ciphertext. */
 export function pushPayload() {
   return {
     aps: {
+      alert: {
+        title: "GrantTap",
+        body: "An agent is waiting for an authenticated decision.",
+      },
+      sound: "default",
       "content-available": 1,
+      "interruption-level": "time-sensitive",
     },
     granttapWake: true,
   };
@@ -391,8 +741,8 @@ async function sendAPNs(env, device) {
     headers: {
       authorization: `bearer ${providerToken}`,
       "apns-topic": device.bundleId,
-      "apns-push-type": "background",
-      "apns-priority": "5",
+      "apns-push-type": "alert",
+      "apns-priority": "10",
       "apns-expiration": String(Math.floor(Date.now() / 1000) + 180),
       "apns-collapse-id": "granttap-wake",
       "content-type": "application/json",
@@ -486,6 +836,81 @@ export class GrantTapCodes {
 
   async alarm() {
     await this.state.storage.deleteAll();
+  }
+}
+
+export class GrantTapWebPairing {
+  constructor(state) {
+    this.state = state;
+  }
+
+  async fetch(request) {
+    const challenge = /^\/web-pair\/([a-f0-9]{32})$/.exec(new URL(request.url).pathname)?.[1];
+    if (!challenge) return json({ error: "bad challenge" }, 400);
+    const existing = await this.state.storage.get("challenge");
+    const now = Date.now();
+
+    if (request.method === "PUT") {
+      if (existing?.expiresAt > now) return json({ error: "challenge occupied" }, 409);
+      let body;
+      try { body = await readJsonLimited(request, MAX_WEB_PAIR_BODY_BYTES); } catch { body = null; }
+      const origin = exactWebOrigin(body?.origin);
+      if (!origin || request.headers.get("Origin") !== origin) {
+        return json({ error: "exact allowed origin required" }, 403);
+      }
+      await this.state.storage.put("challenge", {
+        origin,
+        expiresAt: now + WEB_PAIR_TTL_MS,
+        sealed: null,
+      });
+      await this.state.storage.setAlarm(now + WEB_PAIR_TTL_MS);
+      return json({ ok: true, expiresInSec: WEB_PAIR_TTL_MS / 1000 }, 201);
+    }
+
+    if (!existing || existing.expiresAt <= now) {
+      if (existing) await this.state.storage.deleteAll();
+      return json({ error: "unknown or expired challenge" }, 404);
+    }
+
+    if (request.method === "POST") {
+      if (existing.sealed) return json({ error: "challenge already approved" }, 409);
+      let body;
+      try { body = await readJsonLimited(request, MAX_WEB_PAIR_BODY_BYTES); } catch { body = null; }
+      if (body?.origin !== existing.origin
+          || typeof body?.nonce !== "string" || !/^[A-Za-z0-9_-]{32}$/.test(body.nonce)
+          || typeof body?.box !== "string" || body.box.length < 1 || body.box.length > 24_000
+          || !/^[A-Za-z0-9_-]+$/.test(body.box)) {
+        return json({ error: "origin-bound ciphertext required" }, 403);
+      }
+      await this.state.storage.put("challenge", { ...existing, sealed: body });
+      return json({ ok: true });
+    }
+
+    if (request.method === "GET") {
+      if (request.headers.get("Origin") !== existing.origin) {
+        return json({ error: "origin mismatch" }, 403);
+      }
+      if (!existing.sealed) return json({ status: "pending" }, 202);
+      const sealed = existing.sealed;
+      await this.state.storage.deleteAll();
+      return json(sealed);
+    }
+    return json({ error: "method not allowed" }, 405);
+  }
+
+  async alarm() { await this.state.storage.deleteAll(); }
+}
+
+function exactWebOrigin(value) {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    const local = ["localhost", "127.0.0.1"].includes(url.hostname);
+    if ((url.protocol !== "https:" && !(local && url.protocol === "http:"))
+        || url.origin !== value || url.username || url.password) return null;
+    return url.origin;
+  } catch {
+    return null;
   }
 }
 

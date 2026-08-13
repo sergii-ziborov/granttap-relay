@@ -26,6 +26,28 @@ class_name = "GrantTapRoom"
 name = "CODES"
 class_name = "GrantTapCodes"
 
+[[durable_objects.bindings]]
+name = "VAULTS"
+class_name = "GrantTapVault"
+
+[[durable_objects.bindings]]
+name = "WEB_CODES"
+class_name = "GrantTapWebPairing"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["GrantTapRoom", "GrantTapCodes"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["GrantTapVault"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["GrantTapWebPairing"]
+
+# Encrypted vault envelopes only (AES-GCM ciphertext). Unlock codes never touch KV.
+[[kv_namespaces]]
+binding = "GRANTTAP_VAULT"
+id = "407f5386f5e94d35a9b26c4538ec6f1d"
+preview_id = "8cc7eb1fba4b4eb5b889d830fb4727ba"

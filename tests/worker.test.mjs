@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import worker, {
   GrantTapCodes,
+  GrantTapWebPairing,
   GrantTapRoom,
   pushPayload,
   validDeviceToken,
@@ -16,6 +17,82 @@ test("health endpoint is available without bindings", async () => {
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.deepEqual(await response.json(), { ok: true });
+});
+
+test("web pairing challenges are origin-bound, single-use, and keep the transfer key off relay", async () => {
+  const id = "ad".repeat(16);
+  let routedName = "";
+  const routed = await worker.fetch(
+    new Request(`https://relay.example/web-pair/${id}`, {
+      method: "PUT",
+      headers: { origin: "https://granttap.com", "content-type": "application/json" },
+      body: JSON.stringify({ origin: "https://granttap.com" }),
+    }),
+    { WEB_CODES: {
+      idFromName: (name) => { routedName = name; return name; },
+      get: () => ({ fetch: () => new Response("{}", { status: 201 }) }),
+    } },
+  );
+  assert.equal(routed.status, 201);
+  assert.equal(routedName, id);
+
+  const values = new Map();
+  let alarmAt = 0;
+  const storage = {
+    get: async (key) => values.get(key),
+    put: async (key, value) => values.set(key, value),
+    deleteAll: async () => { values.clear(); },
+    setAlarm: async (value) => { alarmAt = value; },
+  };
+  const pairing = new GrantTapWebPairing({ storage });
+  const url = `https://relay.example/web-pair/${id}`;
+  const register = await pairing.fetch(new Request(url, {
+    method: "PUT",
+    headers: { origin: "https://granttap.com", "content-type": "application/json" },
+    body: JSON.stringify({ origin: "https://granttap.com" }),
+  }));
+  assert.equal(register.status, 201);
+  assert.ok(alarmAt > Date.now());
+  assert.doesNotMatch(JSON.stringify([...values.values()]), /transferKey|GTW1/);
+  assert.equal((await pairing.fetch(new Request(url, { headers: { origin: "https://granttap.com" } }))).status, 202);
+  assert.equal((await pairing.fetch(new Request(url, { headers: { origin: "https://evil.example" } }))).status, 403);
+
+  const sealed = { origin: "https://granttap.com", nonce: "A".repeat(32), box: "B".repeat(64) };
+  assert.equal((await pairing.fetch(new Request(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...sealed, origin: "https://evil.example" }),
+  }))).status, 403);
+  assert.equal((await pairing.fetch(new Request(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(sealed),
+  }))).status, 200);
+  assert.equal((await pairing.fetch(new Request(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(sealed),
+  }))).status, 409);
+
+  const consumed = await pairing.fetch(new Request(url, { headers: { origin: "https://granttap.com" } }));
+  assert.equal(consumed.status, 200);
+  assert.deepEqual(await consumed.json(), sealed);
+  assert.equal((await pairing.fetch(new Request(url, { headers: { origin: "https://granttap.com" } }))).status, 404);
+});
+
+test("vault login UI is served at / and /vault", async () => {
+  for (const path of ["/", "/vault"]) {
+    const response = await worker.fetch(new Request(`https://relay.example${path}`), {});
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /text\/html/);
+    const html = await response.text();
+    assert.match(html, /GrantTap/);
+    assert.match(html, /GTW1/);
+    assert.match(html, /Unlock/);
+    assert.match(html, /if-none-match/);
+    assert.match(html, /if-match/);
+    assert.match(html, /revision conflict/);
+  }
 });
 
 test("unknown HTTP routes disclose no internals", async () => {
@@ -147,13 +224,16 @@ test("queue flush preserves every unsent envelope after a socket failure", async
   ]);
 });
 
-test("APNs wake payload is content-neutral and carries no delivery correlation id", () => {
+test("APNs wake payload is alert+content-available with no task ciphertext", () => {
   assert.equal(validDeviceToken("ab".repeat(32)), true);
   assert.equal(validDeviceToken("not-a-token"), false);
   const payload = pushPayload();
   assert.equal(payload.aps["content-available"], 1);
-  assert.deepEqual(Object.keys(payload.aps), ["content-available"]);
+  assert.equal(payload.aps.sound, "default");
+  assert.equal(payload.aps.alert?.title, "GrantTap");
+  assert.match(String(payload.aps.alert?.body ?? ""), /waiting/i);
   assert.equal(payload.granttapWake, true);
   assert.equal("deliveryId" in payload, false);
-  assert.doesNotMatch(JSON.stringify(payload), /alert|sound|command|prompt|session|approval|schedule|response/i);
+  // Generic wake copy only — never command/session/approval payload fields.
+  assert.doesNotMatch(JSON.stringify(payload), /command|prompt|sessionId|approval\.request|cwd|shell/i);
 });

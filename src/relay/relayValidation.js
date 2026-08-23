@@ -14,6 +14,8 @@ export function validIdentifier(value, max) {
 
 export function validEnvelope(envelope, room, now = Date.now()) {
   if (!envelope || typeof envelope !== "object" || envelope.v !== 1 || envelope.room !== room) return false;
+  const allowed = new Set(["v", "room", "from", "to", "senderId", "deliveryId", "wake", "expiresAt", "nonce", "box"]);
+  if (Object.keys(envelope).some((key) => !allowed.has(key))) return false;
   if (envelope.from !== "machine" && envelope.from !== "phone") return false;
   if (envelope.to !== "machine" && envelope.to !== "phone" && envelope.to !== "all") return false;
   if (!validIdentifier(envelope.senderId, 180)) return false;

@@ -45,19 +45,6 @@ test("room validates and stores APNs registrations", async () => {
   assert.deepEqual(await deleted.json(), { ok: true, registered: false, enabled: false, devices: 0 });
 });
 
-test("room refuses mismatched credentials and malformed approval requests", async () => {
-  const state = memoryState();
-  const relayRoom = new GrantTapRoom(state, {});
-  assert.equal((await relayRoom.fetch(new Request(`https://relay.example/approvals?room=${room}`))).status, 401);
-  await relayRoom.fetch(registration());
-  const mismatch = await relayRoom.fetch(new Request(`https://relay.example/approvals?room=${room}`, { headers: { authorization: `Bearer ${"00".repeat(32)}` } }));
-  assert.equal(mismatch.status, 401);
-  const unsupported = await relayRoom.fetch(new Request(`https://relay.example/approvals?room=${room}`, { method: "PATCH", headers: { authorization: `Bearer ${credential}` } }));
-  assert.equal(unsupported.status, 405);
-  const badCancel = await relayRoom.fetch(new Request(`https://relay.example/approvals?room=${room}`, { method: "DELETE", headers: { authorization: `Bearer ${credential}` } }));
-  assert.equal(badCancel.status, 400);
-});
-
 test("room queues, acknowledges, and delivers opaque envelopes", async () => {
   const state = memoryState();
   const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, {});
@@ -76,6 +63,8 @@ test("room queues, acknowledges, and delivers opaque envelopes", async () => {
   assert.equal(state.values.has("q:phone"), false);
   await relayRoom.webSocketMessage(ws, "not-json");
   await relayRoom.webSocketMessage(ws, JSON.stringify({ ...envelope, from: "phone" }));
+  await relayRoom.webSocketMessage(ws, JSON.stringify({ ...envelope, title: "plaintext" }));
+  assert.equal(state.values.has("q:machine"), false);
 });
 
 test("offline transient envelopes never enter the reliable mailbox", async () => {
@@ -136,8 +125,6 @@ test("room helper callbacks and wake no-op preserve relay-only state", async () 
   const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, {});
   assert.equal(relayRoom.tokensEqual("same", "same"), true);
   assert.equal(relayRoom.tokensEqual("same", "different"), false);
-  const view = await relayRoom.ensureViewToken();
-  assert.match(view.token, /^[a-f0-9]{64}$/);
   await relayRoom.sendWakePush();
   relayRoom.webSocketClose();
   relayRoom.webSocketError();
@@ -281,7 +268,7 @@ test("room rejects unauthenticated upgrades and avoids nonmatching live targets"
   const unrelated = { deserializeAttachment: () => null, send: () => assert.fail("unrelated socket must not receive") };
   relayRoom.state.getWebSockets = () => [sender, unrelated];
   await relayRoom.webSocketMessage(sender, JSON.stringify({ v: 1, room, from: "machine", to: "phone", senderId: "machine-1", nonce: "A".repeat(32), box: "A".repeat(24) }));
-  assert.equal(state.values.get("q:phone").length, 1);
+  assert.equal(state.values.has("q:phone"), false);
 });
 
 test("room rejects unsupported push mutation after authenticated bounded JSON", async () => {
@@ -296,7 +283,7 @@ test("room accepts wake envelopes and prunes expired queued records before retry
   const attachment = { room, role: "machine" };
   const ws = { deserializeAttachment: () => attachment, serializeAttachment: () => {}, send: () => {} };
   const relayRoom = new GrantTapRoom({ ...state, getWebSockets: () => [] }, {});
-  await relayRoom.webSocketMessage(ws, JSON.stringify({ v: 1, room, from: "machine", to: "phone", senderId: "machine-1", nonce: "A".repeat(32), box: "A".repeat(24), wake: true }));
+  await relayRoom.webSocketMessage(ws, JSON.stringify({ v: 1, room, from: "machine", to: "phone", senderId: "machine-1", deliveryId: "wake-1", nonce: "A".repeat(32), box: "A".repeat(24), wake: true }));
   assert.equal(state.values.get("q:phone").length, 1);
   assert.equal(state.values.get("q:phone")[0].raw.includes("expired"), false);
 });

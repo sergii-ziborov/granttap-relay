@@ -5,7 +5,6 @@
  */
 
 import { routeRequest } from "./relay/requestRouter.js";
-import { handleVaultApi } from "./vaultApi.js";
 
 export { GrantTapCodes } from "./relay/pairingMailbox.js";
 export { pushPayload } from "./relay/apnsWake.js";
@@ -16,17 +15,5 @@ export {
   validRoom,
   validRoomCredential,
 } from "./relay/relayValidation.js";
-export { GrantTapWebPairing } from "./webPairing.js";
-
-export class GrantTapVault {
-  constructor(state, env) {
-    this.state = state;
-    this.env = env;
-  }
-
-  fetch(request) {
-    return handleVaultApi(request, this.env, this.state.storage);
-  }
-}
 
 export default { fetch: routeRequest };

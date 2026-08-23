@@ -1,5 +1,4 @@
 import { apnsConfigured, sendAPNs } from "./apnsWake.js";
-import { handleApprovalsApi, handleApprovalsPage, ensureViewToken } from "./roomApprovals.js";
 import { bearer, byteLength, constantTimeEqual, readJsonLimited, sha256, json } from "./relaySupport.js";
 import { validDeviceToken, validEnvelope, validIdentifier, validRoom, validRoomCredential } from "./relayValidation.js";
 
@@ -19,8 +18,6 @@ export class GrantTapRoom {
     const pathname = new URL(request.url).pathname;
     if (pathname === "/push/register") return this.handlePushRegistration(request);
     if (pathname === "/push/status") return this.handlePushStatus(request);
-    if (pathname === "/approvals") return handleApprovalsApi(this, request);
-    if (pathname.startsWith("/a/")) return handleApprovalsPage(this, request);
     return this.acceptWebSocket(request);
   }
 
@@ -171,7 +168,6 @@ export class GrantTapRoom {
   }
 
   tokensEqual(left, right) { return constantTimeEqual(left, right); }
-  ensureViewToken() { return ensureViewToken(this); }
   webSocketClose() {}
   webSocketError() {}
 }

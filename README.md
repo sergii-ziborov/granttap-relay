@@ -28,6 +28,12 @@ that is independent from the 256-bit transfer key kept in the QR/manual token.
 The worker receives the mailbox and ciphertext, but never the transfer key.
 Mailboxes expire after 15 minutes and are single-use.
 
+Project Mesh does not add a coordination database or plaintext API. Project
+snapshots, Task Capsules, handoff receipts, resource claims, dependencies, and
+agent-to-agent questions travel only inside the same opaque encrypted envelope
+format. Project keys and Task keys are granted by authorized endpoints; the
+Worker sees only the existing bounded routing metadata and ciphertext.
+
 The Personal relay has no browser approval, browser pairing, or vault endpoint.
 Traffic crossing the native app transport, network, Cloudflare, Durable Objects,
 and APNs remains authenticated ciphertext. One task key cannot decrypt a second

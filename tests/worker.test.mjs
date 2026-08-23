@@ -49,7 +49,10 @@ test("relay validates only bounded ciphertext envelope fields", () => {
     nonce: "A".repeat(32), box: "A".repeat(24),
   };
   assert.equal(validEnvelope(envelope, roomId, now), true);
-  for (const field of ["title", "command", "cwd", "prompt"]) {
+  for (const field of [
+    "title", "command", "cwd", "prompt", "projectId", "taskId",
+    "meshEvent", "capsule", "resourceClaim", "importantDecisions",
+  ]) {
     assert.equal(validEnvelope({ ...envelope, [field]: "plaintext" }, roomId, now), false, field);
   }
   assert.equal(validEnvelope({ ...envelope, to: "attacker" }, roomId, now), false);

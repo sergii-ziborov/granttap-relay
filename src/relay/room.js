@@ -90,6 +90,10 @@ export class GrantTapRoom {
     if (!queue?.length) return;
     const now = Date.now();
     const pending = queue.filter((item) => (typeof item === "string" ? now + DEFAULT_QUEUE_TTL_MS : item.expiresAt) > now);
+    if (!pending.length) {
+      await this.state.storage.delete(key);
+      return;
+    }
     // Reliable rows already live in storage until their decrypt ACK removes
     // them. Rewriting the pre-send snapshot here races that ACK and resurrects
     // the very row the recipient confirmed, causing duplicate chat events and

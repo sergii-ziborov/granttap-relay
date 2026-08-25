@@ -1,25 +1,66 @@
 # GrantTap Relay
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/sergii-ziborov/granttap-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/sergii-ziborov/granttap-relay/actions/workflows/ci.yml)
 
-The public zero-knowledge relay used by [GrantTap](https://granttap.com).
-It runs on Cloudflare Workers with Durable Objects, routes WebSockets by room,
-and temporarily queues encrypted envelopes while a paired device is offline.
+GrantTap Relay is the public, content-blind transport used by
+[GrantTap](https://granttap.com). It lets a local GrantTap runtime and its paired
+iPhone exchange end-to-end encrypted envelopes when they are on different
+networks or one side is temporarily offline. No inbound port on the computer is
+required.
+
+The production Worker runs on Cloudflare with Durable Objects. It routes
+authenticated WebSockets by opaque room, retains bounded ciphertext for offline
+delivery, and can send a generic, task-content-free APNs alert and background
+wake so the iPhone reconnects and decrypts locally.
 
 Production health endpoint:
 [granttap-relay.sergii-ziborov.workers.dev/health](https://granttap-relay.sergii-ziborov.workers.dev/health)
 
-| Sessions on iPhone | Visible activity on Apple Watch |
+| Task-first control on iPhone | Current tasks on Apple Watch |
 | --- | --- |
-| ![GrantTap sessions on iPhone](docs/images/phone-sessions.png) | ![GrantTap activity on Apple Watch](docs/images/watch-activity.png) |
+| ![GrantTap Tasks on iPhone](docs/images/iphone-tasks.png) | ![GrantTap task queue on Apple Watch](docs/images/watch-tasks.png) |
+
+The screenshots are real deterministic Demo captures from the current GrantTap
+Personal UI. Demo content performs no command and contains no user data.
+
+## Why the relay exists
+
+```text
+Local GrantTap runtime  <=>  ciphertext relay  <=>  iPhone  <=>  Apple Watch
+                              |                     ^
+                              +---- APNs wake ------+
+```
+
+Computers and phones are commonly behind NAT, change networks, sleep, or lose
+connectivity. A direct socket is therefore not a dependable remote-control
+path, and it cannot deliver while the other peer is offline. The relay supplies
+only rendezvous, bounded retry, and wake-up delivery. Apple Watch communicates
+through its paired iPhone; it does not connect to this Worker directly.
+
+This repository is deliberately a small infrastructure component, not the
+GrantTap application backend. Its product surface is stable by design, while
+maintenance continues for transport compatibility, security, reliability, and
+Cloudflare runtime changes. Provider adapters and local agent control live in
+[granttap-mcp](https://github.com/sergii-ziborov/granttap-mcp); the iPhone and
+Watch experiences live in GrantTap.
+
+The Worker does not provide:
+
+- model or coding-agent execution;
+- a plaintext Task, session, prompt, or conversation database;
+- a credential vault;
+- browser pairing, browser approvals, or a browser control plane;
+- access to a computer filesystem or shell.
 
 ## What the relay can and cannot see
 
-The relay can see routing metadata: room, sender/recipient roles, IP addresses,
+The relay is content-blind, not metadata-blind. It can see routing metadata:
+room, sender/recipient roles, IP addresses,
 timing, expiry, message sizes, and—when background delivery is enabled—an APNs
 device token plus its sandbox/production environment. It receives `nonce` and
-`box` as opaque ciphertext. Silent push wakes contain no command, prompt, path,
-session title, or message text.
+`box` as opaque ciphertext. The fixed APNs alert contains no command, prompt,
+path, session title, or message text.
 
 The relay cannot decrypt commands, questions, agent messages, user replies, or
 approval decisions. Device and per-task secret keys are created locally and
@@ -35,10 +76,11 @@ format. Project keys and Task keys are granted by authorized endpoints; the
 Worker sees only the existing bounded routing metadata and ciphertext.
 
 The Personal relay has no browser approval, browser pairing, or vault endpoint.
-Traffic crossing the native app transport, network, Cloudflare, Durable Objects,
-and APNs remains authenticated ciphertext. One task key cannot decrypt a second
-task; a device can open that second task only if its independent key was
-explicitly granted to that device.
+The WebSocket and Durable Object path carries authenticated ciphertext. APNs
+receives only a fixed generic alert and neutral wake flag, never the encrypted
+envelope or its task metadata. One task key cannot decrypt a second task; a
+device can open that second task only if its independent key was explicitly
+granted to that device.
 
 The complete production worker is intentionally small and public so this
 boundary can be audited instead of trusted as a marketing claim.
@@ -64,19 +106,22 @@ retry budget are delivered only to an already connected peer and are not stored
 for offline retry. Client attachment limits keep complete task frames under the
 separate 32 MiB WebSocket receive limit.
 
-The APNs payload is a silent background wake with `content-available: 1` and
-`granttapWake: true`: no alert, sound, task kind, request id, delivery id,
-prompt, command, title, or path. It asks iOS to pull and decrypt the queued E2EE
-envelope, after which the app creates one actionable local notification. Apple
-does not guarantee background execution timing, so this is best-effort—not a
-promise of instant delivery.
+The APNs payload is a generic time-sensitive alert with title `GrantTap`, the
+fixed body `An agent is waiting for an authenticated decision.`, default sound,
+`content-available: 1`, and `granttapWake: true`. It contains no task kind,
+request id, delivery id, prompt, command, session title, or path. Its background
+component asks iOS to pull and decrypt the queued E2EE envelope; the app can then
+present task-specific controls locally. Apple does not guarantee background
+execution timing, so queue retrieval is best-effort—not a promise of instant
+delivery.
 
 A Cloudflare account takeover or Durable Object database export therefore
 reveals only ciphertext plus operational metadata (opaque room/mailbox ids,
 routing roles, IPs, timing/expiry, sizes, APNs token/environment, and the
-neutral wake flag). There is no decryption key in Worker code, bindings,
-storage, logs, or encrypted Worker secrets. APNs provider credentials can sign
-notifications but cannot decrypt GrantTap traffic.
+neutral wake flag) plus the fixed generic alert text above. There is no
+decryption key in Worker code, bindings, storage, logs, or encrypted Worker
+secrets. APNs provider credentials can sign notifications but cannot decrypt
+GrantTap traffic.
 
 ## Run locally
 

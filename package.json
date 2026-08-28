@@ -12,7 +12,7 @@
     "check": "node --check src/worker.js && wrangler deploy --dry-run"
   },
   "devDependencies": {
-    "wrangler": "^4.118.0"
+    "wrangler": "^4.125.0"
   },
   "engines": {
     "node": ">=22"

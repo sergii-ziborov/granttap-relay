@@ -9,13 +9,11 @@ iPhone exchange end-to-end encrypted envelopes when they are on different
 networks or one side is temporarily offline. No inbound port on the computer is
 required.
 
-The production Worker runs on Cloudflare with Durable Objects. It routes
-authenticated WebSockets by opaque room, retains bounded ciphertext for offline
-delivery, and can send a generic, task-content-free APNs alert and background
-wake so the iPhone reconnects and decrypts locally.
-
-Production health endpoint:
-[granttap-relay.sergii-ziborov.workers.dev/health](https://granttap-relay.sergii-ziborov.workers.dev/health)
+The relay can run as a Cloudflare Worker with Durable Objects or as the included
+Node service with SQLite. Both runtimes route authenticated WebSockets by
+opaque room, retain bounded ciphertext for offline delivery, and can send a
+generic, task-content-free APNs alert so the iPhone reconnects and decrypts
+locally.
 
 | Task-first control on iPhone | Current tasks on Apple Watch |
 | --- | --- |
@@ -136,7 +134,26 @@ npm run dev
 ```
 
 Wrangler uses the same Workers runtime locally, including the Durable Object
-bindings declared in `wrangler.toml`.
+bindings declared in `wrangler.toml`. To run the Node and SQLite version, use
+`npm start`; it listens on port 3201 and stores data at `DATABASE_PATH`
+(default `/data/relay.sqlite3`).
+
+## Deploy the self-hosted Node service
+
+The checked-in Compose service binds only to `127.0.0.1:3201`; terminate TLS
+and enforce connection and request limits in the reverse proxy. Create the
+server-only `.env` from `.env.example`, create `/srv/data/granttap` for uid
+1000, then run:
+
+```bash
+docker compose up -d --build
+```
+
+`deploy/nginx-relay.conf` is the production reverse-proxy template. It drops
+malformed unauthenticated traffic before Node, limits pairing and API requests,
+passes WebSocket upgrades, and leaves the ACME challenge path public.
+`deploy/backup-granttap-relay*` provides a daily online SQLite backup with an
+integrity check and 14-day retention.
 
 ## Deploy to your Cloudflare account
 

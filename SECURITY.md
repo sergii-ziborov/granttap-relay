@@ -16,7 +16,8 @@ codes, room identifiers, or device configuration.
 The production relay requires `APNS_TEAM_ID`, `APNS_KEY_ID`, and the Apple `.p8`
 key in `APNS_PRIVATE_KEY` only when APNs background delivery is enabled. Device
 E2EE keys never belong on the relay. Store provider credentials with
-`wrangler secret put`; never print or commit them.
+`wrangler secret put` for Cloudflare or in the mode-0600 server-side `.env`
+for Node; never print or commit them.
 
 APNs device tokens are durable routing identifiers. They are stored inside the
 pairing room, protected by a hash of the room's independent push credential,
@@ -28,6 +29,6 @@ mesh events, Task Capsules, resource claims, dependencies, handoff receipts,
 and agent questions must remain inside authenticated ciphertext. Regression
 tests reject these fields if they appear in relay persistence input.
 
-Cloudflare secrets must never appear in `wrangler.toml`, `.env`,
+Provider secrets must never appear in `wrangler.toml`, a committed `.env`,
 `.dev.vars.example`, GitHub Actions variables, issues, or logs. Local
 `.dev.vars` and `.env*` files are ignored by git.

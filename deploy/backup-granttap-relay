@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+source_db=/srv/data/granttap/relay.sqlite3
+backup_dir=/srv/data/backups/granttap
+stamp=$(date -u +%Y%m%d-%H%M%S)
+temp_db="$backup_dir/.relay-$stamp.sqlite3.tmp"
+final_gz="$backup_dir/relay-$stamp.sqlite3.gz"
+
+install -d -m 0700 "$backup_dir"
+cleanup() {
+  unlink "$temp_db" 2>/dev/null || true
+  unlink "$temp_db.gz" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+python3 - "$source_db" "$temp_db" <<'PY'
+import sqlite3
+import sys
+
+source_path, backup_path = sys.argv[1:3]
+source = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
+destination = sqlite3.connect(backup_path)
+try:
+    source.backup(destination)
+    result = destination.execute("PRAGMA integrity_check").fetchone()[0]
+    if result != "ok":
+        raise SystemExit(f"backup integrity check failed: {result}")
+finally:
+    destination.close()
+    source.close()
+PY
+
+gzip -9 "$temp_db"
+mv "$temp_db.gz" "$final_gz"
+find "$backup_dir" -maxdepth 1 -type f -name 'relay-*.sqlite3.gz' -mtime +14 -delete
+trap - EXIT
+printf '%s\n' "$final_gz"

@@ -18,6 +18,50 @@ test("health endpoint is available without bindings", async () => {
   assert.deepEqual(await response.json(), { ok: true });
 });
 
+test("legacy deployment proxies accepted relay traffic to the private origin", async () => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (request) => {
+    seen.push(request);
+    return new Response(JSON.stringify({ proxied: true }), { headers: { "content-type": "application/json" } });
+  };
+  try {
+    const env = { LEGACY_PROXY_ORIGIN: "https://relay.granttap.com" };
+    const health = await worker.fetch(new Request("https://legacy.example/health"), env);
+    assert.deepEqual(await health.json(), { proxied: true });
+    assert.equal(seen[0].url, "https://relay.granttap.com/health");
+
+    const pairBody = JSON.stringify({ nonce: "A".repeat(32), box: "B".repeat(64) });
+    const pair = new Request(`https://legacy.example/pair/${"ef".repeat(16)}`, {
+      method: "PUT", headers: { authorization: "Bearer secret" }, body: pairBody,
+    });
+    await worker.fetch(pair, env);
+    assert.equal(seen[1].url, `https://relay.granttap.com/pair/${"ef".repeat(16)}`);
+    assert.equal(seen[1].headers.get("authorization"), "Bearer secret");
+    assert.equal(await seen[1].text(), pairBody);
+
+    const status = await worker.fetch(new Request(
+      `https://legacy.example/push/status?room=${roomId}`,
+    ), env);
+    assert.equal(status.status, 200);
+    assert.equal(seen[2].url, `https://relay.granttap.com/push/status?room=${roomId}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("legacy proxy rejects unknown paths, malformed rooms, loops, and unsafe origins", async () => {
+  const env = { LEGACY_PROXY_ORIGIN: "https://relay.granttap.com" };
+  assert.equal((await worker.fetch(new Request("https://legacy.example/vault"), env)).status, 404);
+  assert.equal((await worker.fetch(new Request("https://legacy.example/push/status?room=bad"), env)).status, 404);
+  assert.equal((await worker.fetch(new Request("https://legacy.example/health"), {
+    LEGACY_PROXY_ORIGIN: "http://relay.granttap.com",
+  })).status, 503);
+  assert.equal((await worker.fetch(new Request("https://legacy.example/health"), {
+    LEGACY_PROXY_ORIGIN: "https://legacy.example",
+  })).status, 503);
+});
+
 test("Personal relay exposes no browser workspace routes", async () => {
   const paths = ["/", "/vault", `/api/vault/${"ab".repeat(32)}`, "/approvals", `/a/${roomId}/${"cd".repeat(32)}`, `/web-pair/${"ef".repeat(16)}`];
   for (const path of paths) {

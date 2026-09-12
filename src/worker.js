@@ -5,6 +5,7 @@
  */
 
 import { routeRequest } from "./relay/requestRouter.js";
+import { proxyLegacyRequest } from "./relay/legacyProxy.js";
 
 export { GrantTapCodes } from "./relay/pairingMailbox.js";
 export { pushPayload } from "./relay/apnsWake.js";
@@ -16,4 +17,9 @@ export {
   validRoomCredential,
 } from "./relay/relayValidation.js";
 
-export default { fetch: routeRequest };
+export default {
+  fetch(request, env) {
+    const upstream = env?.LEGACY_PROXY_ORIGIN;
+    return upstream ? proxyLegacyRequest(request, upstream) : routeRequest(request, env);
+  },
+};

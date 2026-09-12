@@ -155,6 +155,13 @@ passes WebSocket upgrades, and leaves the ACME challenge path public.
 `deploy/backup-granttap-relay*` provides a daily online SQLite backup with an
 integrity check and 14-day retention.
 
+When moving an existing Cloudflare deployment to this service, keep already
+installed clients online without continuing Durable Object storage writes by
+setting `LEGACY_PROXY_ORIGIN` on the old Worker to the private HTTPS origin and
+deploying the same code. The Worker then accepts only the documented relay
+routes and forwards them to the private service; its Durable Object bindings
+remain attached for rollback but are not called by public requests.
+
 ## Deploy to your Cloudflare account
 
 ```bash

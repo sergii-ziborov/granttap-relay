@@ -11,6 +11,7 @@ export class GrantTapCodes {
     const mailbox = /^\/pair\/([a-f0-9]{32})$/.exec(new URL(request.url).pathname)?.[1];
     if (!mailbox) return json({ error: "bad mailbox" }, 400);
     if (request.method === "PUT" || request.method === "POST") return this.put(request);
+    if (request.method === "HEAD") return this.head();
     if (request.method === "GET") return this.get();
     return json({ error: "method not allowed" }, 405);
   }
@@ -26,6 +27,12 @@ export class GrantTapCodes {
     await this.state.storage.put("pairing", { nonce: body.nonce, box: body.box, expiresAt });
     await this.state.storage.setAlarm(expiresAt);
     return json({ ok: true, expiresInSec: PAIR_TTL_MS / 1000 });
+  }
+
+  async head() {
+    const item = await this.state.storage.get("pairing");
+    if (!item || item.expiresAt <= Date.now()) return new Response(null, { status: 404 });
+    return new Response(null, { status: 200 });
   }
 
   async get() {

@@ -75,6 +75,11 @@ async function routeHttp(request, response, store, env) {
 }
 
 async function handlePairing(request, response, store, mailbox) {
+  if (request.method === "HEAD") {
+    response.writeHead(store.peekPairing(mailbox) ? 200 : 404);
+    response.end();
+    return;
+  }
   if (request.method === "GET") {
     const item = store.takePairing(mailbox);
     return item ? sendJson(response, 200, item)

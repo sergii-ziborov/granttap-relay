@@ -107,6 +107,12 @@ export class RelayStore {
     }
   }
 
+  peekPairing(mailbox) {
+    this.purgeExpiredPairings();
+    const item = this.db.prepare("SELECT expires_at FROM pairings WHERE mailbox = ?").get(mailbox);
+    return Boolean(item && item.expires_at > Date.now());
+  }
+
   takePairing(mailbox) {
     this.db.exec("BEGIN IMMEDIATE");
     try {

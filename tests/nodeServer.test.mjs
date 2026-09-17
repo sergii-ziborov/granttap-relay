@@ -36,6 +36,8 @@ test("health and one-time pairing mailbox work without storing plaintext keys", 
     method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(sealed),
   });
   assert.equal(put.status, 200);
+  assert.equal((await fetch(`${base}/pair/${mailbox}`, { method: "HEAD" })).status, 200);
+  assert.equal((await fetch(`${base}/pair/${mailbox}`, { method: "HEAD" })).status, 200);
   assert.equal((await fetch(`${base}/pair/${mailbox}`, {
     method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(sealed),
   })).status, 409);

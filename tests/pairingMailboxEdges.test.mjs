@@ -13,6 +13,31 @@ function codes() {
   } });
 }
 
+test("pairing mailbox HEAD reports occupancy without consuming the ciphertext", async () => {
+  const instance = codes();
+  const body = { nonce: "A".repeat(32), box: "B".repeat(64) };
+  assert.equal((await instance.fetch(new Request(url, { method: "HEAD" }))).status, 404);
+  assert.equal((await instance.fetch(new Request(url, { method: "POST", body: JSON.stringify(body) }))).status, 200);
+  assert.equal((await instance.fetch(new Request(url, { method: "HEAD" }))).status, 200);
+  assert.equal((await instance.fetch(new Request(url, { method: "HEAD" }))).status, 200);
+  const got = await instance.fetch(new Request(url));
+  assert.equal(got.status, 200);
+  assert.equal((await instance.fetch(new Request(url, { method: "HEAD" }))).status, 404);
+});
+
+test("HEAD reports mailbox occupancy without consuming the ciphertext", async () => {
+  const instance = codes();
+  const body = { nonce: "A".repeat(32), box: "B".repeat(64) };
+  assert.equal((await instance.fetch(new Request(url, { method: "HEAD" }))).status, 404);
+  assert.equal((await instance.fetch(new Request(url, { method: "POST", body: JSON.stringify(body) }))).status, 200);
+  assert.equal((await instance.fetch(new Request(url, { method: "HEAD" }))).status, 200);
+  assert.equal((await instance.fetch(new Request(url, { method: "HEAD" }))).status, 200);
+  const consumed = await instance.fetch(new Request(url));
+  assert.equal(consumed.status, 200);
+  assert.deepEqual(await consumed.json(), body);
+  assert.equal((await instance.fetch(new Request(url, { method: "HEAD" }))).status, 404);
+});
+
 test("pairing mailbox supports POST and rejects malformed paths and methods", async () => {
   const instance = codes();
   assert.equal((await instance.fetch(new Request("https://relay.example/pair/bad"))).status, 400);

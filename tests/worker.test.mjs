@@ -45,6 +45,13 @@ test("legacy deployment proxies accepted relay traffic to the private origin", a
     ), env);
     assert.equal(status.status, 200);
     assert.equal(seen[2].url, `https://relay.granttap.com/push/status?room=${roomId}`);
+
+    const phoneSocket = await worker.fetch(new Request(
+      `https://legacy.example/ws?room=${roomId}`,
+      { headers: { Upgrade: "websocket" } },
+    ), env);
+    assert.equal(phoneSocket.status, 200);
+    assert.equal(seen[3].url, `https://relay.granttap.com/ws?room=${roomId}`);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { apnsConfigured, sendAPNs } from "../relay/apnsWake.js";
-import { validBase64, validDeviceToken, validEnvelope, validIdentifier,
+import { acceptsWebSocketPath, validBase64, validDeviceToken, validEnvelope, validIdentifier,
   validRoom, validRoomCredential } from "../relay/relayValidation.js";
 import { RelayStore } from "./store.js";
 
@@ -26,7 +26,7 @@ export function createRelayServer(options = {}) {
   server.on("upgrade", (request, socket, head) => {
     const url = requestUrl(request);
     const room = url?.searchParams.get("room");
-    if (!url || url.pathname !== "/" || !validRoom(room) || !authorize(store, room, bearer(request))) {
+    if (!url || !acceptsWebSocketPath(url.pathname) || !validRoom(room) || !authorize(store, room, bearer(request))) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;

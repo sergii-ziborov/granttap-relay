@@ -55,6 +55,12 @@ test("room credential pins on connection and rejects a different credential", as
   assert.equal((await connectFailure(otherCredential)), 401);
 });
 
+test("iPhone /ws upgrade uses the same room credential as /", async () => {
+  const socket = await connect(credential, "/ws");
+  socket.close();
+  assert.equal((await connectFailure(otherCredential, "/ws")), 401);
+});
+
 test("authenticated peers exchange, persist, replay, and acknowledge encrypted envelopes", async () => {
   const machine = await connect(credential);
   const phone = await connect(credential);
@@ -89,17 +95,17 @@ test("push registration stays bounded and reports disabled without APNs credenti
 
 function auth(value) { return { authorization: `Bearer ${value}` }; }
 
-function connect(value) {
+function connect(value, path = "/") {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(base.replace("http", "ws") + `/?room=${room}`, { headers: auth(value) });
+    const ws = new WebSocket(base.replace("http", "ws") + `${path === "/" ? "/" : path}?room=${room}`, { headers: auth(value) });
     ws.once("open", () => resolve(ws));
     ws.once("error", reject);
   });
 }
 
-function connectFailure(value) {
+function connectFailure(value, path = "/") {
   return new Promise((resolve) => {
-    const ws = new WebSocket(base.replace("http", "ws") + `/?room=${room}`, { headers: auth(value) });
+    const ws = new WebSocket(base.replace("http", "ws") + `${path === "/" ? "/" : path}?room=${room}`, { headers: auth(value) });
     ws.once("unexpected-response", (_request, response) => resolve(response.statusCode));
     ws.once("error", () => resolve(0));
   });

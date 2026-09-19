@@ -4,6 +4,11 @@ export function validRoom(room) {
   return typeof room === "string" && /^[a-f0-9]{16,64}$/.test(room);
 }
 
+/** Mac helper upgrades `/`. The iPhone currently opens `/ws`. Accept both. */
+export function acceptsWebSocketPath(pathname) {
+  return pathname === "/" || pathname === "/ws";
+}
+
 export function validRoomCredential(value) {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }

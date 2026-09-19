@@ -1,5 +1,5 @@
 import { json } from "./relaySupport.js";
-import { validRoom } from "./relayValidation.js";
+import { acceptsWebSocketPath, validRoom } from "./relayValidation.js";
 
 const PAIRING_PATH = /^\/pair\/[a-f0-9]{32}$/;
 const PUSH_PATHS = new Set(["/push/register", "/push/status"]);
@@ -32,5 +32,5 @@ function allowedRequest(request, url) {
     return validRoom(url.searchParams.get("room"));
   }
   const websocket = (request.headers.get("Upgrade") ?? "").toLowerCase() === "websocket";
-  return url.pathname === "/" && websocket && validRoom(url.searchParams.get("room"));
+  return acceptsWebSocketPath(url.pathname) && websocket && validRoom(url.searchParams.get("room"));
 }

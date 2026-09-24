@@ -67,6 +67,14 @@ that is independent from the 256-bit transfer key kept in the QR/manual token.
 The worker receives the mailbox and ciphertext, but never the transfer key.
 Mailboxes expire after 15 minutes and are single-use.
 
+The same opaque mailbox primitive can carry a bundle of one-time controller
+links from a trusted iPhone or iPad to a second phone. The first phone obtains
+a separate controller credential from each Live computer, encrypts those links
+locally, and shows a QR whose transfer key stays on the phones. The relay does
+not learn which computers are linked, and it does not grant Project Mesh
+membership. Offline computers cannot issue a new controller credential until
+they reconnect.
+
 Project Mesh does not add a coordination database or plaintext API. Project
 snapshots, Task Capsules, handoff receipts, resource claims, dependencies, and
 agent-to-agent questions travel only inside the same opaque encrypted envelope

@@ -6,6 +6,7 @@ import { apnsConfigured, sendAPNs } from "../relay/apnsWake.js";
 import { acceptsWebSocketPath, validBase64, validDeviceToken, validEnvelope, validIdentifier,
   validRoom, validRoomCredential } from "../relay/relayValidation.js";
 import { RelayStore } from "./store.js";
+import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "../relay/endpointDirectory.js";
 
 const MAX_HTTP_BODY_BYTES = 40_000;
 const MAX_PUSH_BODY_BYTES = 4_096;
@@ -64,10 +65,23 @@ async function routeHttp(request, response, store, env) {
   const url = requestUrl(request);
   if (!url) return sendJson(response, 400, { error: "bad request" });
   if (url.pathname === "/health" && request.method === "GET") {
-    return sendJson(response, 200, { ok: true });
+    return sendJson(response, 200, { ok: true,
+      ...(env.RELAY_INSTANCE_ID ? { instanceId: env.RELAY_INSTANCE_ID } : {}) });
   }
   const mailbox = /^\/pair\/([a-f0-9]{32})$/.exec(url.pathname)?.[1];
   if (mailbox) return handlePairing(request, response, store, mailbox);
+  if (url.pathname === "/endpoint") {
+    const room = url.searchParams.get("room");
+    const key = endpointStorageKey(room, url.searchParams.get("recipient"));
+    if (!key) return sendJson(response, 400, { error: "invalid endpoint recipient" });
+    const result = await endpointResponse({ method: request.method, room,
+      authorize: (pin) => authorize(store, room, bearer(request), pin),
+      read: () => readJson(request, ENDPOINT_BODY_LIMIT), store: {
+        put: (record) => store.putEndpoint(key, record), get: () => store.endpoint(key),
+        delete: () => store.deleteEndpoint(key),
+      } });
+    return sendJson(response, result.status, result.body);
+  }
   if (url.pathname === "/push/register" || url.pathname === "/push/status") {
     return handlePush(request, response, store, env, url);
   }
@@ -140,7 +154,9 @@ async function handleMessage(ws, raw, store, sockets, env) {
     flushQueue(ws, store.queue(state.room, state.role));
   } else if (state.role !== envelope.from) return;
   if (envelope.to !== "all" && envelope.deliveryId) {
-    store.enqueue(state.room, envelope.to, raw, envelope.deliveryId, envelope.expiresAt);
+    if (!store.enqueue(state.room, envelope.to, raw, envelope.deliveryId, envelope.expiresAt)) {
+      return ws.close(1009, "queue capacity");
+    }
   }
   for (const target of sockets.get(state.room) ?? []) {
     if (target === ws || target.readyState !== WebSocket.OPEN) continue;

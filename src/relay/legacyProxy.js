@@ -2,7 +2,7 @@ import { json } from "./relaySupport.js";
 import { acceptsWebSocketPath, validRoom } from "./relayValidation.js";
 
 const PAIRING_PATH = /^\/pair\/[a-f0-9]{32}$/;
-const PUSH_PATHS = new Set(["/push/register", "/push/status"]);
+const PUSH_PATHS = new Set(["/push/register", "/push/status", "/endpoint"]);
 
 export async function proxyLegacyRequest(request, upstreamOrigin, fetcher = fetch) {
   const incoming = new URL(request.url);

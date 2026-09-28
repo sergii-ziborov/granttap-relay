@@ -1,6 +1,9 @@
 import { apnsConfigured, sendAPNs } from "./apnsWake.js";
 import { bearer, byteLength, constantTimeEqual, readJsonLimited, sha256, json } from "./relaySupport.js";
 import { validDeviceToken, validEnvelope, validIdentifier, validRoom, validRoomCredential } from "./relayValidation.js";
+import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "./endpointDirectory.js";
+
+import { putDirectoryEndpoint, purgeEndpointDirectory } from "./endpointRetention.js";
 
 const HOLD_LIMIT = 100;
 const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
@@ -18,6 +21,7 @@ export class GrantTapRoom {
     const pathname = new URL(request.url).pathname;
     if (pathname === "/push/register") return this.handlePushRegistration(request);
     if (pathname === "/push/status") return this.handlePushStatus(request);
+    if (pathname === "/endpoint") return this.handleEndpoint(request);
     return this.acceptWebSocket(request);
   }
 
@@ -49,7 +53,10 @@ export class GrantTapRoom {
     } else if (known.role !== envelope.from) return;
     const targets = this.targetsFor(ws, envelope);
     if (envelope.to !== "all" && envelope.deliveryId) {
-      await this.queue(envelope.to, raw, envelope.deliveryId, envelope.expiresAt);
+      if (!await this.queue(envelope.to, raw, envelope.deliveryId, envelope.expiresAt)) {
+        ws.close(1009, "queue capacity");
+        return;
+      }
     }
     for (const target of targets) {
       try { target.send(raw); } catch { /* stale hibernating socket */ }
@@ -66,15 +73,16 @@ export class GrantTapRoom {
 
   async queue(role, raw, deliveryId, expiresAt) {
     const rawBytes = byteLength(raw);
-    if (rawBytes > MAX_QUEUE_BYTES) return;
+    if (rawBytes > MAX_QUEUE_BYTES) return false;
     const key = `q:${role}`;
     const now = Date.now();
     const queue = ((await this.state.storage.get(key)) ?? []).filter((item) => (item.expiresAt ?? now + DEFAULT_QUEUE_TTL_MS) > now);
-    if (deliveryId && queue.some((item) => item.deliveryId === deliveryId)) return;
+    if (deliveryId && queue.some((item) => item.deliveryId === deliveryId)) return true;
     queue.push({ raw, rawBytes, deliveryId, expiresAt: expiresAt ?? now + DEFAULT_QUEUE_TTL_MS });
     if (queue.length > HOLD_LIMIT) queue.splice(0, queue.length - HOLD_LIMIT);
     trimQueue(queue);
     await this.state.storage.put(key, queue);
+    return true;
   }
 
   async acknowledge(role, deliveryId) {
@@ -171,6 +179,26 @@ export class GrantTapRoom {
     return null;
   }
 
+  async handleEndpoint(request) {
+    const url = new URL(request.url);
+    const room = url.searchParams.get("room");
+    const key = endpointStorageKey(room, url.searchParams.get("recipient"));
+    if (!key) return json({ error: "invalid endpoint recipient" }, 400);
+    const result = await endpointResponse({ method: request.method,
+      room,
+      authorize: async (pin) => {
+        if (!pin && !await this.state.storage.get(PUSH_AUTH_KEY)) return false;
+        return !await this.requireRoomAuth(request);
+      }, read: () => readJsonLimited(request, ENDPOINT_BODY_LIMIT), store: {
+        put: (record) => putDirectoryEndpoint(this.state.storage, key, record),
+        get: () => this.state.storage.get(`endpoint:${key}`),
+        delete: () => this.state.storage.delete(`endpoint:${key}`),
+      } });
+    return json(result.body, result.status);
+  }
+
+  async alarm() { await purgeEndpointDirectory(this.state.storage); }
+
   tokensEqual(left, right) { return constantTimeEqual(left, right); }
   webSocketClose() {}
   webSocketError() {}
@@ -179,5 +207,5 @@ export class GrantTapRoom {
 function trimQueue(queue) {
   const itemBytes = (item) => typeof item === "string" ? byteLength(item) : (item.rawBytes ?? byteLength(item.raw ?? ""));
   let total = queue.reduce((sum, item) => sum + itemBytes(item), 0);
-  while (queue.length > 1 && total > MAX_QUEUE_BYTES) total -= itemBytes(queue.shift());
+  while (queue.length > 0 && total > MAX_QUEUE_BYTES) total -= itemBytes(queue.shift());
 }

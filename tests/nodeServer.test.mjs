@@ -93,6 +93,22 @@ test("push registration stays bounded and reports disabled without APNs credenti
   assert.deepEqual(await response.json(), { ok: true, registered: true, enabled: false, devices: 1 });
 });
 
+test("oversized reliable ciphertext closes before it can be delivered", async () => {
+  const sender = await connect(credential);
+  const oversized = JSON.parse(envelope("machine", "phone", "too-large"));
+  oversized.box = Buffer.alloc(1_350_001, 7).toString("base64");
+  const closed = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      sender.terminate();
+      reject(new Error("oversized envelope was not rejected"));
+    }, 5_000);
+    sender.once("close", (code) => { clearTimeout(timeout); resolve(code); });
+  });
+  sender.send(JSON.stringify(oversized));
+  assert.equal(await closed, 1009);
+  assert.equal(store.queue(room, "phone").some((item) => item.deliveryId === "too-large"), false);
+});
+
 function auth(value) { return { authorization: `Bearer ${value}` }; }
 
 function connect(value, path = "/") {

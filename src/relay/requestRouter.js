@@ -6,7 +6,7 @@ export async function routeRequest(request, env) {
   const websocket = (request.headers.get("Upgrade") ?? "").toLowerCase() === "websocket";
   if (url.pathname === "/health") return json({ ok: true });
   if (/^\/pair\/([a-f0-9]{32})$/.test(url.pathname)) return routeTo(request, env, "CODES", url.pathname.slice(6));
-  if (["/push/register", "/push/status"].includes(url.pathname)) return routeRoom(request, env, url);
+  if (["/push/register", "/push/status", "/endpoint"].includes(url.pathname)) return routeRoom(request, env, url);
   if (websocket) return routeRoom(request, env, url);
   return json({ error: "not found" }, 404);
 }

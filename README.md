@@ -1,18 +1,20 @@
 # GrantTap Relay
 
-[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![license](https://img.shields.io/badge/license-commercial%20source-blue.svg)](LICENSE)
 [![CI](https://github.com/sergii-ziborov/granttap-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/sergii-ziborov/granttap-relay/actions/workflows/ci.yml)
 
 GrantTap Relay is the public, content-blind transport used by
-[GrantTap](https://granttap.com). It lets a local GrantTap runtime and its paired
-iPhone exchange end-to-end encrypted envelopes when they are on different
-networks or one side is temporarily offline. No inbound port on the computer is
-required.
+[GrantTap](https://granttap.com). It lets local GrantTap runtimes and authorized
+controllers exchange end-to-end encrypted envelopes across networks and bounded
+offline periods. iPhone and iPad are controller surfaces; Apple Watch reaches
+the network through its paired iPhone. The Mac app reads local MCP health and
+Engine data through separate local interfaces. No inbound port on a coding
+computer is required.
 
 The relay can run as a Cloudflare Worker with Durable Objects or as the included
 Node service with SQLite. Both runtimes route authenticated WebSockets by
 opaque room, retain bounded ciphertext for offline delivery, and can send a
-generic, task-content-free APNs alert so the iPhone reconnects and decrypts
+generic, task-content-free APNs alert so an iPhone reconnects and decrypts
 locally.
 
 | Task-first control on iPhone | Current tasks on Apple Watch |
@@ -25,9 +27,9 @@ Personal UI. Demo content performs no command and contains no user data.
 ## Why the relay exists
 
 ```text
-Local GrantTap runtime  <=>  ciphertext relay  <=>  iPhone  <=>  Apple Watch
-                              |                     ^
-                              +---- APNs wake ------+
+Coding computer / local runtime  <=>  ciphertext relay  <=>  iPhone / iPad
+                                       |                     |
+                                       +---- APNs wake ------+---- Apple Watch via iPhone
 ```
 
 Computers and phones are commonly behind NAT, change networks, sleep, or lose
@@ -40,8 +42,8 @@ This repository is deliberately a small infrastructure component, not the
 GrantTap application backend. Its product surface is stable by design, while
 maintenance continues for transport compatibility, security, reliability, and
 Cloudflare runtime changes. Provider adapters and local agent control live in
-[granttap-mcp](https://github.com/sergii-ziborov/granttap-mcp); the iPhone and
-Watch experiences live in GrantTap.
+[granttap-mcp](https://github.com/sergii-ziborov/granttap-mcp); the Mac, iPhone,
+iPad, and Watch experiences live in GrantTap.
 
 The Worker does not provide:
 
@@ -90,6 +92,11 @@ granted to that device.
 
 The complete production worker is intentionally small and public so this
 boundary can be audited instead of trusted as a marketing claim.
+
+The current source is published under the [GrantTap Commercial Source License](LICENSE).
+Viewing and testing the source are allowed for evaluation; production deployment
+or redistribution of versions under that license needs a separate commercial
+grant. Copies released earlier under MIT keep their original MIT permissions.
 
 ## Endpoints
 
@@ -223,3 +230,22 @@ existing `v1` migration.
 - Security policy: [SECURITY.md](SECURITY.md)
 
 GrantTap is not affiliated with Anthropic, OpenAI, Apple, or Cloudflare.
+
+## Mac license and connection modes
+
+A purchased GrantTap Mac license includes running this relay for personal or
+internal use under [LICENSE](LICENSE), without a Personal subscription. The Mac
+app can install a pinned relay revision through its separate MCP, start and stop
+it in Settings → Device network. Node 22+ is required. The local process binds
+only to loopback; supply a reachable TLS proxy or VPN. It does not configure NAT
+or install an APNs signing key. Restart it after a reboot when needed.
+
+Hosted delivery is the optional Personal subscription service. Direct mode uses
+`/endpoint` only for authenticated address discovery, then transports chat traffic
+to the configured endpoint. PUT/GET/DELETE require the room credential, with a
+64-character SHA-256 recipient identifier. The directory accepts only sealed
+nonce/box/expiry records (12 KB maximum), never plaintext endpoints. Up to 32
+records per room expire within 15 minutes; SQLite cleanup and Worker alarms
+remove expired ciphertext. This service does not contact advertised addresses.
+Self-hosted mode uses your endpoint for both pairing and delivery, without the
+managed directory. All computers in a paired room must use the same endpoint.

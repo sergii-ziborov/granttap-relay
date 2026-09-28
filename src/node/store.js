@@ -28,6 +28,10 @@ export class RelayStore {
         expires_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS pairings_expiry ON pairings(expires_at);
+      CREATE TABLE IF NOT EXISTS endpoint_directory (
+        room TEXT PRIMARY KEY, nonce TEXT NOT NULL, box TEXT NOT NULL, expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS endpoint_expiry ON endpoint_directory(expires_at);
     `);
     this.ensureRoom = this.db.prepare(`
       INSERT INTO rooms(room, updated_at) VALUES (?, ?)
@@ -37,11 +41,10 @@ export class RelayStore {
   }
 
   room(room) {
-    this.ensureRoom.run(room, Date.now());
     return this.roomStatement.get(room);
   }
 
-  authDigest(room) { return this.room(room).auth_sha256 ?? null; }
+  authDigest(room) { return this.room(room)?.auth_sha256 ?? null; }
 
   pinAuth(room, digest) {
     this.ensureRoom.run(room, Date.now());
@@ -53,18 +56,27 @@ export class RelayStore {
 
   queue(room, role) {
     const column = queueColumn(role);
-    return parseArray(this.room(room)[column]).filter((item) => item.expiresAt > Date.now());
+    const row = this.room(room);
+    if (!row) return [];
+    const stored = parseArray(row[column]);
+    const live = stored.filter((item) => item.expiresAt > Date.now());
+    if (live.length !== stored.length) this.writeQueue(room, role, live);
+    return live;
   }
 
   enqueue(room, role, raw, deliveryId, expiresAt) {
+    const rawBytes = Buffer.byteLength(raw);
+    if (rawBytes > MAX_QUEUE_BYTES || (expiresAt != null && expiresAt <= Date.now())
+      || !this.room(room)) return false;
     const queue = this.queue(room, role);
-    if (queue.some((item) => item.deliveryId === deliveryId)) return;
-    queue.push({ raw, rawBytes: Buffer.byteLength(raw), deliveryId,
+    if (queue.some((item) => item.deliveryId === deliveryId)) return true;
+    queue.push({ raw, rawBytes, deliveryId,
       expiresAt: expiresAt ?? Date.now() + DEFAULT_QUEUE_TTL_MS });
     if (queue.length > HOLD_LIMIT) queue.splice(0, queue.length - HOLD_LIMIT);
     let bytes = queue.reduce((sum, item) => sum + item.rawBytes, 0);
-    while (queue.length > 1 && bytes > MAX_QUEUE_BYTES) bytes -= queue.shift().rawBytes;
+    while (queue.length > 0 && bytes > MAX_QUEUE_BYTES) bytes -= queue.shift().rawBytes;
     this.writeQueue(room, role, queue);
+    return true;
   }
 
   acknowledge(room, role, deliveryId) {
@@ -77,7 +89,7 @@ export class RelayStore {
       .run(JSON.stringify(queue), Date.now(), room);
   }
 
-  pushTokens(room) { return parseArray(this.room(room).push_tokens); }
+  pushTokens(room) { return parseArray(this.room(room)?.push_tokens ?? "[]"); }
 
   updatePushToken(room, device, remove = false) {
     let tokens = this.pushTokens(room).filter((item) => item.token !== device.token);
@@ -128,7 +140,28 @@ export class RelayStore {
 
   purgeExpiredPairings() {
     this.db.prepare("DELETE FROM pairings WHERE expires_at <= ?").run(Date.now());
+    this.db.prepare("DELETE FROM endpoint_directory WHERE expires_at <= ?").run(Date.now());
   }
+
+  putEndpoint(room, record) {
+    this.purgeExpiredPairings();
+    const prefix = room.split(":", 1)[0];
+    const count = this.db.prepare("SELECT COUNT(*) AS count FROM endpoint_directory WHERE room = ? OR room LIKE ?")
+      .get(prefix, `${prefix}:%`).count;
+    if (!this.endpoint(room) && count >= 32) return false;
+    this.db.prepare(`INSERT INTO endpoint_directory(room, nonce, box, expires_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(room) DO UPDATE SET nonce=excluded.nonce, box=excluded.box, expires_at=excluded.expires_at`)
+      .run(room, record.nonce, record.box, record.expiresAt);
+    return true;
+  }
+
+  endpoint(room) {
+    const item = this.db.prepare("SELECT nonce, box, expires_at FROM endpoint_directory WHERE room = ?").get(room);
+    if (!item || item.expires_at <= Date.now()) { this.deleteEndpoint(room); return null; }
+    return { nonce: item.nonce, box: item.box, expiresAt: item.expires_at };
+  }
+
+  deleteEndpoint(room) { this.db.prepare("DELETE FROM endpoint_directory WHERE room = ?").run(room); }
 
   close() { this.db.close(); }
 }

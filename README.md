@@ -3,13 +3,17 @@
 [![license](https://img.shields.io/badge/license-commercial%20source-blue.svg)](LICENSE)
 [![CI](https://github.com/sergii-ziborov/granttap-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/sergii-ziborov/granttap-relay/actions/workflows/ci.yml)
 
-GrantTap Relay is the public, content-blind transport used by
-[GrantTap](https://granttap.com). It lets local GrantTap runtimes and authorized
-controllers exchange end-to-end encrypted envelopes across networks and bounded
-offline periods. iPhone and iPad are controller surfaces; Apple Watch reaches
-the network through its paired iPhone. The Mac app reads local MCP health and
-Engine data through separate local interfaces. No inbound port on a coding
-computer is required.
+> **Reach your local coding agents from your devices without opening an inbound
+port or handing the relay your task content.**
+
+GrantTap Relay is the public, content-blind transport behind
+[GrantTap](https://granttap.com). It carries end-to-end encrypted messages
+between a local coding computer and authorized iPhone or iPad controllers,
+including bounded delivery while a device is offline. Apple Watch uses its
+paired iPhone. The relay routes and wakes; the devices decrypt and decide.
+
+For the full product journey, see the [GrantTap website](https://granttap.com)
+and its [illustrated journal](https://granttap.com/blog).
 
 The relay can run as a Cloudflare Worker with Durable Objects or as the included
 Node service with SQLite. Both runtimes route authenticated WebSockets by

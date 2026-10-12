@@ -253,3 +253,13 @@ records per room expire within 15 minutes; SQLite cleanup and Worker alarms
 remove expired ciphertext. This service does not contact advertised addresses.
 Self-hosted mode uses your endpoint for both pairing and delivery, without the
 managed directory. All computers in a paired room must use the same endpoint.
+
+Commercial Node deployments set `MANAGED_ADMISSION_REQUIRED=1` and provide
+`MANAGED_ADMISSION_KEY_PATH`, a private signing key shared with the GrantTap
+account authority. Each publisher socket needs a short-lived account-issued
+computer lease in `X-GrantTap-Admission`. The relay checks the signature, room
+and expiry, refuses machine frames from controller sockets, and requests renewal
+when a lease expires. A modified client cannot omit this check. The account
+authority validates Apple receipts and atomically enforces stable computer seats.
+Phone controllers do not take computer seats. The setting is explicit so a
+personal self-hosted relay keeps operating without subscription admission.

@@ -7,6 +7,7 @@ import { acceptsWebSocketPath, validBase64, validDeviceToken, validEnvelope, val
   validRoom, validRoomCredential } from "../relay/relayValidation.js";
 import { RelayStore } from "./store.js";
 import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "../relay/endpointDirectory.js";
+import { managedAdmission } from "./managed-admission.js";
 
 const MAX_HTTP_BODY_BYTES = 40_000;
 const MAX_PUSH_BODY_BYTES = 4_096;
@@ -18,6 +19,7 @@ const MAX_SOCKET_MESSAGES_PER_SECOND = 300;
 export function createRelayServer(options = {}) {
   const store = options.store ?? new RelayStore(options.databasePath ?? process.env.DATABASE_PATH ?? "/data/relay.sqlite3");
   const env = options.env ?? process.env;
+  const admission = managedAdmission(env);
   const sockets = new Map();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WEBSOCKET_MESSAGE_BYTES });
   const server = createServer((request, response) => {
@@ -27,8 +29,15 @@ export function createRelayServer(options = {}) {
   server.on("upgrade", (request, socket, head) => {
     const url = requestUrl(request);
     const room = url?.searchParams.get("room");
+    const ticketHeader = request.headers["x-granttap-admission"];
+    const ticket = admission ? admission(ticketHeader, room) : null;
     if (!url || !acceptsWebSocketPath(url.pathname) || !validRoom(room) || !authorize(store, room, bearer(request))) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    if (admission && ticketHeader && !ticket) {
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
@@ -38,7 +47,13 @@ export function createRelayServer(options = {}) {
       return;
     }
     wss.handleUpgrade(request, socket, head, (ws) => {
-      ws.relayState = { room, role: null, windowStartedAt: Date.now(), windowMessages: 0 };
+      ws.relayState = { room, role: null, commercial: !!admission, ticket,
+        windowStartedAt: Date.now(), windowMessages: 0 };
+      if (ticket) {
+        const expiry = setTimeout(() => ws.close(1008, "managed access renewal required"), ticket.expiresAt - Date.now());
+        expiry.unref();
+        ws.on("close", () => clearTimeout(expiry));
+      }
       const roomSockets = sockets.get(room) ?? new Set();
       roomSockets.add(ws);
       sockets.set(room, roomSockets);
@@ -149,6 +164,10 @@ async function handleMessage(ws, raw, store, sockets, env) {
     return;
   }
   if (!validEnvelope(envelope, state.room, Date.now())) return;
+  if (state.commercial && envelope.from === "machine"
+    && (!state.ticket || state.ticket.expiresAt <= Date.now())) {
+    return ws.close(1008, "managed computer admission required");
+  }
   if (!state.role) {
     state.role = envelope.from;
     flushQueue(ws, store.queue(state.room, state.role));

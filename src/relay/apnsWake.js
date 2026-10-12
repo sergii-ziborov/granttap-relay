@@ -1,7 +1,18 @@
-let cachedProviderToken = null;
+const cachedProviderTokens = new Map();
 
-export function apnsConfigured(env) {
-  return Boolean(env?.APNS_TEAM_ID && env?.APNS_KEY_ID && env?.APNS_PRIVATE_KEY);
+export function apnsConfigured(env, environment) {
+  if (!environment) return apnsConfigured(env, "production") || apnsConfigured(env, "sandbox");
+  const selected = apnsEnvironment(env, environment);
+  return Boolean(selected?.APNS_TEAM_ID && selected?.APNS_KEY_ID && selected?.APNS_PRIVATE_KEY);
+}
+
+function apnsEnvironment(env, environment) {
+  if (!env) return null;
+  if (environment === "sandbox" && env.APNS_SANDBOX_KEY_ID) {
+    return { ...env, APNS_TEAM_ID: env.APNS_SANDBOX_TEAM_ID ?? env.APNS_TEAM_ID,
+      APNS_KEY_ID: env.APNS_SANDBOX_KEY_ID, APNS_PRIVATE_KEY: env.APNS_SANDBOX_PRIVATE_KEY };
+  }
+  return env.APNS_KEY_ENVIRONMENT && env.APNS_KEY_ENVIRONMENT !== environment ? null : env;
 }
 
 export function pushPayload() {
@@ -16,10 +27,12 @@ export function pushPayload() {
   };
 }
 
-export async function sendAPNs(env, device) {
+export async function sendAPNs(env, device, request = fetch) {
+  if (!apnsConfigured(env, device.environment)) throw new Error("APNs environment is not configured.");
+  env = apnsEnvironment(env, device.environment);
   const providerToken = await apnsProviderToken(env);
   const host = device.environment === "sandbox" ? "https://api.sandbox.push.apple.com" : "https://api.push.apple.com";
-  const response = await fetch(`${host}/3/device/${device.token}`, {
+  const response = await request(`${host}/3/device/${device.token}`, {
     method: "POST",
     headers: {
       authorization: `bearer ${providerToken}`,
@@ -41,8 +54,9 @@ export async function sendAPNs(env, device) {
 
 async function apnsProviderToken(env) {
   const now = Math.floor(Date.now() / 1000);
-  if (cachedProviderToken?.team === env.APNS_TEAM_ID && cachedProviderToken?.key === env.APNS_KEY_ID
-      && now - cachedProviderToken.issuedAt < 45 * 60) return cachedProviderToken.token;
+  const identity = `${env.APNS_TEAM_ID}:${env.APNS_KEY_ID}`;
+  const cached = cachedProviderTokens.get(identity);
+  if (cached && now - cached.issuedAt < 45 * 60) return cached.token;
   const header = base64url(JSON.stringify({ alg: "ES256", kid: env.APNS_KEY_ID }));
   const claims = base64url(JSON.stringify({ iss: env.APNS_TEAM_ID, iat: now }));
   const signingInput = `${header}.${claims}`;
@@ -51,7 +65,8 @@ async function apnsProviderToken(env) {
   const key = await crypto.subtle.importKey("pkcs8", bytes, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
   const signature = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(signingInput)));
   const token = `${signingInput}.${base64url(signature)}`;
-  cachedProviderToken = { team: env.APNS_TEAM_ID, key: env.APNS_KEY_ID, issuedAt: now, token };
+  if (cachedProviderTokens.size >= 4) cachedProviderTokens.delete(cachedProviderTokens.keys().next().value);
+  cachedProviderTokens.set(identity, { issuedAt: now, token });
   return token;
 }
 

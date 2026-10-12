@@ -53,3 +53,35 @@ test("APNs accepts a successful response and caches the provider token", async (
     globalThis.fetch = originalFetch;
   }
 });
+
+test('environment-scoped production credentials do not admit sandbox registration', () => {
+  const production = { APNS_TEAM_ID: 'TESTTEAM', APNS_KEY_ID: 'TESTKEY',
+    APNS_PRIVATE_KEY: 'configured', APNS_KEY_ENVIRONMENT: 'production' };
+  assert.equal(apnsConfigured(production, 'production'), true);
+  assert.equal(apnsConfigured(production, 'sandbox'), false);
+  assert.equal(apnsConfigured({ ...production, APNS_SANDBOX_KEY_ID: 'SANDBOXKEY',
+    APNS_SANDBOX_PRIVATE_KEY: 'configured' }, 'sandbox'), true);
+  assert.equal(apnsConfigured({ ...production, APNS_SANDBOX_KEY_ID: 'SANDBOXKEY' }, 'sandbox'), false);
+});
+
+test('sandbox and production signers retain separate cached authorization tokens', async () => {
+  const key = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const encoded = Buffer.from(await crypto.subtle.exportKey('pkcs8', key.privateKey)).toString('base64');
+  const pem = `-----BEGIN PRIVATE KEY-----\n${encoded}\n-----END PRIVATE KEY-----`;
+  const env = { APNS_TEAM_ID: 'SCOPEDTEAM', APNS_KEY_ID: 'PRODUCTION', APNS_PRIVATE_KEY: pem,
+    APNS_KEY_ENVIRONMENT: 'production', APNS_SANDBOX_KEY_ID: 'SANDBOX', APNS_SANDBOX_PRIVATE_KEY: pem };
+  const authorizations = [];
+  const deliver = async (_url, options) => {
+    authorizations.push(options.headers.authorization);
+    return new Response(null, { status: 200 });
+  };
+  for (const environment of ['production', 'sandbox', 'production']) {
+    assert.deepEqual(await sendAPNs(env, { environment, token, bundleId: 'com.ziborov.granttap' }, deliver),
+      { ok: true, stale: false });
+  }
+  assert.equal(authorizations[0], authorizations[2]);
+  assert.notEqual(authorizations[0], authorizations[1]);
+  const header = authorization => JSON.parse(Buffer.from(authorization.slice(7).split('.')[0], 'base64url'));
+  assert.equal(header(authorizations[0]).kid, 'PRODUCTION');
+  assert.equal(header(authorizations[1]).kid, 'SANDBOX');
+});

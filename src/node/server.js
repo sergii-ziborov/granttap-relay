@@ -8,6 +8,8 @@ import { acceptsWebSocketPath, validBase64, validDeviceToken, validEnvelope, val
 import { RelayStore } from "./store.js";
 import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "../relay/endpointDirectory.js";
 import { managedAdmission } from "./managed-admission.js";
+import { nodeAPNsRequest } from "./pushDelivery/http2.js";
+import { configuredPushEnvironment } from "./pushDelivery/configuration.js";
 
 const MAX_HTTP_BODY_BYTES = 40_000;
 const MAX_PUSH_BODY_BYTES = 4_096;
@@ -18,7 +20,7 @@ const MAX_SOCKET_MESSAGES_PER_SECOND = 300;
 
 export function createRelayServer(options = {}) {
   const store = options.store ?? new RelayStore(options.databasePath ?? process.env.DATABASE_PATH ?? "/data/relay.sqlite3");
-  const env = options.env ?? process.env;
+  const env = configuredPushEnvironment(options.env ?? process.env);
   const admission = managedAdmission(env);
   const sockets = new Map();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WEBSOCKET_MESSAGE_BYTES });
@@ -150,7 +152,7 @@ async function handlePush(request, response, store, env, url) {
   const tokens = store.updatePushToken(room, { token, environment: body.environment, bundleId: body.bundleId },
     request.method === "DELETE");
   return sendJson(response, 200, { ok: true, registered: request.method !== "DELETE",
-    enabled: apnsConfigured(env), devices: tokens.length });
+    enabled: apnsConfigured(env, body.environment), devices: tokens.length });
 }
 
 async function handleMessage(ws, raw, store, sockets, env) {
@@ -207,7 +209,7 @@ async function sendWakePush(store, room, env) {
   if (!apnsConfigured(env)) return;
   const stale = [];
   await Promise.all(store.pushTokens(room).map(async (device) => {
-    try { if ((await sendAPNs(env, device)).stale) stale.push(device.token); } catch { /* retry on next wake */ }
+    try { if ((await sendAPNs(env, device, nodeAPNsRequest)).stale) stale.push(device.token); } catch { /* retry on next wake */ }
   }));
   if (stale.length) store.removePushTokens(room, stale);
 }

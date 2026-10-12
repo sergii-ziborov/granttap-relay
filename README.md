@@ -203,6 +203,14 @@ emitted secure WebSocket URL as the relay URL in your GrantTap pairing. Without
 all three secrets, `/push/status` honestly reports `enabled: false`; foreground
 WebSocket delivery and durable queues keep working.
 
+For the Node/Hetzner server, mount signing files and use
+`APNS_PRIVATE_KEY_PATH` with `APNS_KEY_ENVIRONMENT=production`, plus
+`APNS_SANDBOX_KEY_ID` and `APNS_SANDBOX_PRIVATE_KEY_PATH` for development.
+The Node sender uses TLS HTTP/2, an eight-second deadline and bounded responses.
+New topic-specific Apple keys are limited to one environment; scope them to
+`com.ziborov.granttap`. Existing legacy keys that support both environments
+remain compatible. See [Node push delivery](src/node/pushDelivery/README.md).
+
 Every WebSocket and push endpoint also requires the pairing's random 256-bit
 room credential. First use pins only its SHA-256 digest inside that room's
 Durable Object; legacy pairings that predate this credential must re-pair.

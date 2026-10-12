@@ -148,7 +148,7 @@ export class GrantTapRoom {
     } else return json({ error: "method not allowed" }, 405);
     if (tokens.length) await this.state.storage.put(PUSH_TOKENS_KEY, tokens);
     else await this.state.storage.delete(PUSH_TOKENS_KEY);
-    return json({ ok: true, registered: request.method !== "DELETE", enabled: apnsConfigured(this.env), devices: tokens.length });
+    return json({ ok: true, registered: request.method !== "DELETE", enabled: apnsConfigured(this.env, body.environment), devices: tokens.length });
   }
 
   async handlePushStatus(request) {

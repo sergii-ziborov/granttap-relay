@@ -48,6 +48,17 @@ test("a modified controller cannot publish as a paid computer and expired admiss
   const delivered = once(phone, "message");
   machine.send(envelope("machine"));
   assert.equal(JSON.parse((await delivered)[0].toString()).from, "machine");
+  const renewalClaim = { ...claim, expiresAt: Date.now() + 1_200 };
+  const renewalBody = Buffer.from(JSON.stringify(renewalClaim)).toString("base64url");
+  const renewedTicket = `${renewalBody}.${createHmac("sha256", secret)
+    .update(`granttap-managed-v1.${renewalBody}`).digest("base64url")}`;
+  const renewed = once(machine, "message");
+  machine.send(JSON.stringify({ type: "relay.admission", ticket: renewedTicket }));
+  const answer = await Promise.race([renewed,
+    new Promise((_, reject) => setTimeout(() => reject(Error("Renewal was not confirmed")), 700))]);
+  assert.equal(JSON.parse(answer[0].toString()).type, "relay.admission.accepted");
+  await new Promise(resolve => setTimeout(resolve, 600));
+  assert.equal(machine.readyState, WebSocket.OPEN, "The first ticket expiry must not interrupt a renewed computer");
   assert.equal((await once(machine, "close"))[0], 1008);
   const invalid = new WebSocket(url, { headers: { Authorization: `Bearer ${credential}`, "X-GrantTap-Admission": "invalid" } });
   sockets.push(invalid);

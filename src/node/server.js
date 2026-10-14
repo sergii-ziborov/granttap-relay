@@ -8,6 +8,7 @@ import { acceptsWebSocketPath, validBase64, validDeviceToken, validEnvelope, val
 import { RelayStore } from "./store.js";
 import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "../relay/endpointDirectory.js";
 import { managedAdmission } from "./managed-admission.js";
+import { armManagedExpiry, renewManagedConnection } from "./managed-connection.js";
 import { nodeAPNsRequest } from "./pushDelivery/http2.js";
 import { configuredPushEnvironment } from "./pushDelivery/configuration.js";
 
@@ -52,9 +53,8 @@ export function createRelayServer(options = {}) {
       ws.relayState = { room, role: null, commercial: !!admission, ticket,
         windowStartedAt: Date.now(), windowMessages: 0 };
       if (ticket) {
-        const expiry = setTimeout(() => ws.close(1008, "managed access renewal required"), ticket.expiresAt - Date.now());
-        expiry.unref();
-        ws.on("close", () => clearTimeout(expiry));
+        armManagedExpiry(ws, ticket);
+        ws.on("close", () => clearTimeout(ws.relayState.admissionTimer));
       }
       const roomSockets = sockets.get(room) ?? new Set();
       roomSockets.add(ws);
@@ -66,7 +66,7 @@ export function createRelayServer(options = {}) {
   wss.on("connection", (ws) => {
     ws.on("message", (value, binary) => {
       if (binary) return;
-      void handleMessage(ws, value.toString(), store, sockets, env);
+      void handleMessage(ws, value.toString(), store, sockets, env, admission);
     });
     ws.on("close", () => removeSocket(ws, sockets));
     ws.on("error", () => removeSocket(ws, sockets));
@@ -155,11 +155,12 @@ async function handlePush(request, response, store, env, url) {
     enabled: apnsConfigured(env, body.environment), devices: tokens.length });
 }
 
-async function handleMessage(ws, raw, store, sockets, env) {
+async function handleMessage(ws, raw, store, sockets, env, admission) {
   if (Buffer.byteLength(raw) > MAX_WEBSOCKET_MESSAGE_BYTES) return ws.close(1009);
   if (!acceptSocketMessage(ws.relayState)) return ws.close(1008, "rate limit");
   let envelope;
   try { envelope = JSON.parse(raw); } catch { return; }
+  if (renewManagedConnection(ws, envelope, admission)) return;
   const state = ws.relayState;
   if (envelope?.type === "relay.ack" && validIdentifier(envelope.deliveryId, 180)) {
     if (state.role) store.acknowledge(state.room, state.role, envelope.deliveryId);

@@ -5,6 +5,8 @@ import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "./end
 
 import { putDirectoryEndpoint, purgeEndpointDirectory } from "./endpointRetention.js";
 
+import { validRecipientKeyId, matchesRecipient, matchesQueuedRecipient } from "./recipientRouting.js";
+
 const HOLD_LIMIT = 100;
 const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
 const PUSH_TOKEN_LIMIT = 8;
@@ -31,9 +33,14 @@ export class GrantTapRoom {
     if (!validRoom(room)) return json({ error: "valid room query parameter required" }, 400);
     const authError = await this.requireRoomAuth(request);
     if (authError) return authError;
+    const recipientKeyId = request.headers.get("X-GrantTap-Recipient-Key-Id") ?? undefined;
+    if (recipientKeyId !== undefined && !validRecipientKeyId(recipientKeyId)) return json({ error: "invalid recipient" }, 400);
     const pair = new WebSocketPair();
     this.state.acceptWebSocket(pair[1]);
-    pair[1].serializeAttachment({ room });
+    pair[1].serializeAttachment({ room, ...(recipientKeyId ? { recipientKeyId } : {}) });
+    if (request.headers.get("X-GrantTap-Recipient-Routing") === "1") {
+      pair[1].send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true }));
+    }
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
@@ -48,7 +55,7 @@ export class GrantTapRoom {
     }
     if (!validEnvelope(envelope, known.room, Date.now())) return;
     if (!known.role) {
-      ws.serializeAttachment({ room: known.room, role: envelope.from });
+      ws.serializeAttachment({ ...known, role: envelope.from });
       await this.flushTo(envelope.from, ws);
     } else if (known.role !== envelope.from) return;
     const targets = this.targetsFor(ws, envelope);
@@ -67,7 +74,8 @@ export class GrantTapRoom {
   targetsFor(ws, envelope) {
     return this.state.getWebSockets().filter((socket) => socket !== ws).filter((socket) => {
       const attachment = socket.deserializeAttachment();
-      return envelope.to === "all" || attachment?.role === envelope.to;
+      return (envelope.to === "all" || attachment?.role === envelope.to)
+        && matchesRecipient(envelope, attachment?.recipientKeyId);
     });
   }
 
@@ -108,7 +116,9 @@ export class GrantTapRoom {
     // an immortal backlog ahead of fresh catalog snapshots.
     if (pending.every((item) => typeof item !== "string" && item.deliveryId)) {
       for (const item of pending) {
-        try { ws.send(item.raw); } catch { break; }
+        try {
+          if (matchesQueuedRecipient(item.raw, ws.deserializeAttachment?.()?.recipientKeyId)) ws.send(item.raw);
+        } catch { break; }
       }
       return;
     }
@@ -117,6 +127,10 @@ export class GrantTapRoom {
       const item = pending[index];
       const raw = typeof item === "string" ? item : item.raw;
       if (!raw) continue;
+      if (!matchesQueuedRecipient(raw, ws.deserializeAttachment?.()?.recipientKeyId)) {
+        remaining.push(item);
+        continue;
+      }
       try {
         ws.send(raw);
         if (typeof item !== "string" && item.deliveryId) remaining.push(item);

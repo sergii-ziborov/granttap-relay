@@ -19,12 +19,13 @@ export function validIdentifier(value, max) {
 
 export function validEnvelope(envelope, room, now = Date.now()) {
   if (!envelope || typeof envelope !== "object" || envelope.v !== 1 || envelope.room !== room) return false;
-  const allowed = new Set(["v", "room", "from", "to", "senderId", "deliveryId", "wake", "expiresAt", "nonce", "box"]);
+  const allowed = new Set(["v", "room", "from", "to", "senderId", "deliveryId", "wake", "expiresAt", "nonce", "box", "recipientKeyId"]);
   if (Object.keys(envelope).some((key) => !allowed.has(key))) return false;
   if (envelope.from !== "machine" && envelope.from !== "phone") return false;
   if (envelope.to !== "machine" && envelope.to !== "phone" && envelope.to !== "all") return false;
   if (!validIdentifier(envelope.senderId, 180)) return false;
   if (envelope.deliveryId != null && !validIdentifier(envelope.deliveryId, 180)) return false;
+  if (envelope.recipientKeyId != null && !/^[a-f0-9]{64}$/.test(envelope.recipientKeyId)) return false;
   if (envelope.wake != null && typeof envelope.wake !== "boolean") return false;
   if (envelope.expiresAt != null && (!Number.isSafeInteger(envelope.expiresAt)
       || envelope.expiresAt <= now || envelope.expiresAt > now + MAX_ENVELOPE_TTL_MS)) return false;

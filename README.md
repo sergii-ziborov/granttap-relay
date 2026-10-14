@@ -271,3 +271,12 @@ when a lease expires. A modified client cannot omit this check. The account
 authority validates Apple receipts and atomically enforces stable computer seats.
 Phone controllers do not take computer seats. The setting is explicit so a
 personal self-hosted relay keeps operating without subscription admission.
+
+## Ciphertext recipient routing
+
+Updated controllers send their public key’s SHA-256 digest in the authenticated
+WebSocket upgrade. A publisher requests `X-GrantTap-Recipient-Routing: 1` and
+uses addressed envelopes only after the relay advertises support. This limits
+live and retained ciphertext to its intended controller without changing room
+authorization or encryption. Earlier clients and relays remain compatible.
+The routing digest is not a credential; clients still authenticate every payload.

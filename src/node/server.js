@@ -12,6 +12,8 @@ import { armManagedExpiry, renewManagedConnection } from "./managed-connection.j
 import { nodeAPNsRequest } from "./pushDelivery/http2.js";
 import { configuredPushEnvironment } from "./pushDelivery/configuration.js";
 
+import { validRecipientKeyId, matchesRecipient, matchesQueuedRecipient } from "../relay/recipientRouting.js";
+
 const MAX_HTTP_BODY_BYTES = 40_000;
 const MAX_PUSH_BODY_BYTES = 4_096;
 const MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024;
@@ -49,9 +51,15 @@ export function createRelayServer(options = {}) {
       socket.destroy();
       return;
     }
+    const recipientKeyId = request.headers["x-granttap-recipient-key-id"];
+    if (recipientKeyId !== undefined && !validRecipientKeyId(recipientKeyId)) {
+      socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     wss.handleUpgrade(request, socket, head, (ws) => {
       ws.relayState = { room, role: null, commercial: !!admission, ticket,
-        windowStartedAt: Date.now(), windowMessages: 0 };
+        windowStartedAt: Date.now(), windowMessages: 0, recipientKeyId };
       if (ticket) {
         armManagedExpiry(ws, ticket);
         ws.on("close", () => clearTimeout(ws.relayState.admissionTimer));
@@ -60,6 +68,9 @@ export function createRelayServer(options = {}) {
       roomSockets.add(ws);
       sockets.set(room, roomSockets);
       wss.emit("connection", ws);
+      if (request.headers["x-granttap-recipient-routing"] === "1") {
+        ws.send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true }));
+      }
     });
   });
 
@@ -182,7 +193,9 @@ async function handleMessage(ws, raw, store, sockets, env, admission) {
   }
   for (const target of sockets.get(state.room) ?? []) {
     if (target === ws || target.readyState !== WebSocket.OPEN) continue;
-    if (envelope.to === "all" || target.relayState?.role === envelope.to) target.send(raw);
+    if (envelope.to === "all" || target.relayState?.role === envelope.to) {
+      if (matchesRecipient(envelope, target.relayState?.recipientKeyId)) target.send(raw);
+    }
   }
   if (envelope.to === "phone" && envelope.wake === true) {
     void sendWakePush(store, state.room, env);
@@ -202,7 +215,7 @@ function acceptSocketMessage(state) {
 function flushQueue(ws, queue) {
   for (const item of queue) {
     if (ws.readyState !== WebSocket.OPEN) break;
-    ws.send(item.raw);
+    if (matchesQueuedRecipient(item.raw, ws.relayState.recipientKeyId)) ws.send(item.raw);
   }
 }
 

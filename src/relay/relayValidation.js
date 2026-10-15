@@ -17,7 +17,7 @@ export function validIdentifier(value, max) {
   return typeof value === "string" && value.length >= 1 && value.length <= max;
 }
 
-export function validEnvelope(envelope, room, now = Date.now()) {
+export function validEnvelope(envelope, room, now = Date.now(), maximumTtlMs = MAX_ENVELOPE_TTL_MS) {
   if (!envelope || typeof envelope !== "object" || envelope.v !== 1 || envelope.room !== room) return false;
   const allowed = new Set(["v", "room", "from", "to", "senderId", "deliveryId", "wake", "expiresAt", "nonce", "box", "recipientKeyId"]);
   if (Object.keys(envelope).some((key) => !allowed.has(key))) return false;
@@ -28,7 +28,7 @@ export function validEnvelope(envelope, room, now = Date.now()) {
   if (envelope.recipientKeyId != null && !/^[a-f0-9]{64}$/.test(envelope.recipientKeyId)) return false;
   if (envelope.wake != null && typeof envelope.wake !== "boolean") return false;
   if (envelope.expiresAt != null && (!Number.isSafeInteger(envelope.expiresAt)
-      || envelope.expiresAt <= now || envelope.expiresAt > now + MAX_ENVELOPE_TTL_MS)) return false;
+      || envelope.expiresAt <= now || envelope.expiresAt > now + maximumTtlMs)) return false;
   if (typeof envelope.nonce !== "string" || !/^[A-Za-z0-9+/]{32}$/.test(envelope.nonce)) return false;
   return typeof envelope.box === "string" && envelope.box.length >= 24
     && /^[A-Za-z0-9+/]+={0,2}$/.test(envelope.box);

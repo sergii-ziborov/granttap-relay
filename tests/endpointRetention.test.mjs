@@ -15,7 +15,7 @@ function harness() {
     setAlarm: async time => { alarm = time; },
     deleteAlarm: async () => { alarm = undefined; },
   };
-  return { room: new GrantTapRoom({ storage }, {}), values, alarm: () => alarm };
+  return { room: new GrantTapRoom({ storage, getWebSockets: () => [] }, {}), values, alarm: () => alarm };
 }
 
 test('Worker directory caps recipients, cleans expired ciphertext by alarm and keeps chat data', async () => {

@@ -8,8 +8,8 @@
     "dev": "wrangler dev",
     "start": "node src/node/server.js",
     "deploy": "wrangler deploy",
-    "test": "node --test tests/*.test.mjs",
-    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='src/**/*.js' tests/*.test.mjs",
+    "test": "node --test tests/*.test.mjs src/taskDispatch/tests/*.test.mjs src/taskDispatch/writers/tests/*.test.mjs src/taskDispatch/configurations/tests/*.test.mjs",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='src/**/*.js' tests/*.test.mjs src/taskDispatch/tests/*.test.mjs src/taskDispatch/writers/tests/*.test.mjs src/taskDispatch/configurations/tests/*.test.mjs",
     "check": "node --check src/worker.js && node --check src/node/server.js && wrangler deploy --dry-run"
   },
   "devDependencies": {

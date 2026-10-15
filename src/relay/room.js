@@ -1,9 +1,11 @@
+import { initializeRoomTaskDispatch, handleRoomTaskDispatch, offerRoomTaskJobs,
+  scheduleRoomTaskAlarm } from "../taskDispatch/worker-room.js";
 import { apnsConfigured, sendAPNs } from "./apnsWake.js";
 import { bearer, byteLength, constantTimeEqual, readJsonLimited, sha256, json } from "./relaySupport.js";
 import { validDeviceToken, validEnvelope, validIdentifier, validRoom, validRoomCredential } from "./relayValidation.js";
 import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "./endpointDirectory.js";
 
-import { putDirectoryEndpoint, purgeEndpointDirectory } from "./endpointRetention.js";
+import { putDirectoryEndpoint } from "./endpointRetention.js";
 
 import { validRecipientKeyId, matchesRecipient, matchesQueuedRecipient } from "./recipientRouting.js";
 
@@ -17,10 +19,11 @@ const MAX_QUEUE_BYTES = 1_800_000;
 const MAX_PUSH_BODY_BYTES = 4_096;
 
 export class GrantTapRoom {
-  constructor(state, env) { this.state = state; this.env = env; }
+  constructor(state, env) { this.state = state; this.env = env; initializeRoomTaskDispatch(this); }
 
   async fetch(request) {
     const pathname = new URL(request.url).pathname;
+    if (pathname === "/task-jobs" || pathname.startsWith("/task-jobs/") || pathname.startsWith("/task-job-writers/") || pathname.startsWith("/task-resources/") || pathname.startsWith("/task-job-configurations/")) return handleRoomTaskDispatch(this, request);
     if (pathname === "/push/register") return this.handlePushRegistration(request);
     if (pathname === "/push/status") return this.handlePushStatus(request);
     if (pathname === "/endpoint") return this.handleEndpoint(request);
@@ -37,9 +40,10 @@ export class GrantTapRoom {
     if (recipientKeyId !== undefined && !validRecipientKeyId(recipientKeyId)) return json({ error: "invalid recipient" }, 400);
     const pair = new WebSocketPair();
     this.state.acceptWebSocket(pair[1]);
-    pair[1].serializeAttachment({ room, ...(recipientKeyId ? { recipientKeyId } : {}) });
+    pair[1].serializeAttachment({ room, ...(recipientKeyId ? { recipientKeyId } : {}),
+      taskDispatch: request.headers.get("X-GrantTap-Task-Dispatch") === "1" });
     if (request.headers.get("X-GrantTap-Recipient-Routing") === "1") {
-      pair[1].send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true }));
+      pair[1].send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true }));
     }
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
@@ -57,6 +61,10 @@ export class GrantTapRoom {
     if (!known.role) {
       ws.serializeAttachment({ ...known, role: envelope.from });
       await this.flushTo(envelope.from, ws);
+      if (envelope.from === "machine" && known.taskDispatch) {
+        await offerRoomTaskJobs(this);
+        await scheduleRoomTaskAlarm(this);
+      }
     } else if (known.role !== envelope.from) return;
     const targets = this.targetsFor(ws, envelope);
     if (envelope.to !== "all" && envelope.deliveryId) {
@@ -208,10 +216,11 @@ export class GrantTapRoom {
         get: () => this.state.storage.get(`endpoint:${key}`),
         delete: () => this.state.storage.delete(`endpoint:${key}`),
       } });
+    if (result.status < 300) await scheduleRoomTaskAlarm(this);
     return json(result.body, result.status);
   }
 
-  async alarm() { await purgeEndpointDirectory(this.state.storage); }
+  async alarm() { await offerRoomTaskJobs(this); await scheduleRoomTaskAlarm(this); }
 
   tokensEqual(left, right) { return constantTimeEqual(left, right); }
   webSocketClose() {}

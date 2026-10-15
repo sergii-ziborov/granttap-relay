@@ -11,6 +11,7 @@ export async function purgeEndpointDirectory(storage, now = Date.now()) {
   }
   if (next !== undefined) await storage.setAlarm(next);
   else await storage.deleteAlarm();
+  return next;
 }
 
 export async function putDirectoryEndpoint(storage, key, record) {

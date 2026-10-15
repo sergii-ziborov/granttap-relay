@@ -1,3 +1,4 @@
+import { readJson, sendJson } from "./http-payloads.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,8 @@ import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "../re
 import { managedAdmission } from "./managed-admission.js";
 import { armManagedExpiry, renewManagedConnection } from "./managed-connection.js";
 import { nodeAPNsRequest } from "./pushDelivery/http2.js";
+import { nodeTaskDispatchPump } from "../taskDispatch/socket-offers.js";
+import { taskDispatchResponse } from "../taskDispatch/index.js";
 import { configuredPushEnvironment } from "./pushDelivery/configuration.js";
 
 import { validRecipientKeyId, matchesRecipient, matchesQueuedRecipient } from "../relay/recipientRouting.js";
@@ -26,6 +29,7 @@ export function createRelayServer(options = {}) {
   const env = configuredPushEnvironment(options.env ?? process.env);
   const admission = managedAdmission(env);
   const sockets = new Map();
+  const offerJobs = nodeTaskDispatchPump(store.taskDispatch, sockets);
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WEBSOCKET_MESSAGE_BYTES });
   const server = createServer((request, response) => {
     void routeHttp(request, response, store, env).catch(() => sendJson(response, 500, { error: "internal error" }));
@@ -59,7 +63,8 @@ export function createRelayServer(options = {}) {
     }
     wss.handleUpgrade(request, socket, head, (ws) => {
       ws.relayState = { room, role: null, commercial: !!admission, ticket,
-        windowStartedAt: Date.now(), windowMessages: 0, recipientKeyId };
+        windowStartedAt: Date.now(), windowMessages: 0, recipientKeyId,
+        taskDispatch: request.headers["x-granttap-task-dispatch"] === "1" };
       if (ticket) {
         armManagedExpiry(ws, ticket);
         ws.on("close", () => clearTimeout(ws.relayState.admissionTimer));
@@ -69,7 +74,7 @@ export function createRelayServer(options = {}) {
       sockets.set(room, roomSockets);
       wss.emit("connection", ws);
       if (request.headers["x-granttap-recipient-routing"] === "1") {
-        ws.send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true }));
+        ws.send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true }));
       }
     });
   });
@@ -83,9 +88,11 @@ export function createRelayServer(options = {}) {
     ws.on("error", () => removeSocket(ws, sockets));
   });
 
+  const dispatchTimer = setInterval(() => { void offerJobs().catch(() => {}); }, options.taskDispatchIntervalMs ?? 1000);
+  dispatchTimer.unref();
   const cleanup = setInterval(() => store.purgeExpiredPairings(), 60_000);
   cleanup.unref();
-  server.on("close", () => { clearInterval(cleanup); wss.close(); store.close(); });
+  server.on("close", () => { clearInterval(cleanup); clearInterval(dispatchTimer); wss.close(); store.close(); });
   return server;
 }
 
@@ -95,6 +102,14 @@ async function routeHttp(request, response, store, env) {
   if (url.pathname === "/health" && request.method === "GET") {
     return sendJson(response, 200, { ok: true,
       ...(env.RELAY_INSTANCE_ID ? { instanceId: env.RELAY_INSTANCE_ID } : {}) });
+  }
+  if (url.pathname === "/task-jobs" || url.pathname.startsWith("/task-jobs/") || url.pathname.startsWith("/task-job-writers/") || url.pathname.startsWith("/task-resources/") || url.pathname.startsWith("/task-job-configurations/")) {
+    const room = url.searchParams.get("room");
+    const result = await taskDispatchResponse({ method: request.method, pathname: url.pathname, room,
+      authorize: () => authorize(store, room, bearer(request), false), credential: bearer(request),
+      read: limit => readJson(request, limit), store: store.taskDispatch,
+      metadataOnly: url.searchParams.get("metadata") === "1" });
+    return sendJson(response, result.status, result.body);
   }
   const mailbox = /^\/pair\/([a-f0-9]{32})$/.exec(url.pathname)?.[1];
   if (mailbox) return handlePairing(request, response, store, mailbox);
@@ -239,26 +254,6 @@ function authorize(store, room, credential, pin = true) {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-async function readJson(request, maxBytes) {
-  const declared = Number(request.headers["content-length"] ?? 0);
-  if (Number.isFinite(declared) && declared > maxBytes) return null;
-  const chunks = [];
-  let length = 0;
-  for await (const chunk of request) {
-    length += chunk.length;
-    if (length > maxBytes) return null;
-    chunks.push(chunk);
-  }
-  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { return null; }
-}
-
-function sendJson(response, status, body) {
-  if (response.headersSent) return;
-  const payload = JSON.stringify(body);
-  response.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(payload),
-    "cache-control": "no-store", "x-content-type-options": "nosniff" });
-  response.end(payload);
-}
 
 function requestUrl(request) {
   try { return new URL(request.url, "http://relay.invalid"); } catch { return null; }

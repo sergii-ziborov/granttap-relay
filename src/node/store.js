@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { NodeTaskDispatchStore } from "../taskDispatch/node.js";
 
 const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
 const HOLD_LIMIT = 100;
@@ -11,7 +12,7 @@ export class RelayStore {
   constructor(path) {
     mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
-    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;");
+    this.db.exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS rooms (
         room TEXT PRIMARY KEY,
@@ -38,6 +39,7 @@ export class RelayStore {
       ON CONFLICT(room) DO UPDATE SET updated_at=excluded.updated_at
     `);
     this.roomStatement = this.db.prepare("SELECT * FROM rooms WHERE room = ?");
+    this.taskDispatch = new NodeTaskDispatchStore(this.db);
   }
 
   room(room) {
@@ -139,6 +141,7 @@ export class RelayStore {
   }
 
   purgeExpiredPairings() {
+    this.taskDispatch.purge();
     this.db.prepare("DELETE FROM pairings WHERE expires_at <= ?").run(Date.now());
     this.db.prepare("DELETE FROM endpoint_directory WHERE expires_at <= ?").run(Date.now());
   }

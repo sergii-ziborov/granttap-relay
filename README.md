@@ -171,6 +171,13 @@ docker compose up -d --build
 `deploy/nginx-relay.conf` is the production reverse-proxy template. It drops
 malformed unauthenticated traffic before Node, limits pairing and API requests,
 passes WebSocket upgrades, and leaves the ACME challenge path public.
+The Node service pings sockets every 30 s and drops peers that stop answering,
+well inside the template's `proxy_read_timeout 300s`; set `RELAY_HEARTBEAT_MS`
+(1000–120000, or `0` to disable) to change that. Policy closes use documented
+close codes, and a client that keeps reconnecting after one is refused with
+`429` and `Retry-After` for a short, growing cool-down. The service writes
+rate-limited JSON diagnostic lines with an 8-character room prefix, role, code
+and reason only. See [connection policy](src/relay/README.md#connection-policy).
 `deploy/backup-granttap-relay*` provides a daily online SQLite backup with an
 integrity check and 14-day retention.
 

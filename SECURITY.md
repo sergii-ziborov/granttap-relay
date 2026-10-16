@@ -29,6 +29,13 @@ mesh events, Task Capsules, resource claims, dependencies, handoff receipts,
 and agent questions must remain inside authenticated ciphertext. Regression
 tests reject these fields if they appear in relay persistence input.
 
+Relay diagnostics are allowlisted, rate-limited JSON lines: event name, an
+8-hex room prefix, role, close code or HTTP status, reason token, retry delay
+and a suppression count. Room credentials, admission tickets, public-key
+digests, sender ids, envelopes and client IP addresses are never logged. The
+reconnect cool-down is in memory and keyed only by room and public-key digest
+prefixes or a digest of the cleartext sender id.
+
 Provider secrets must never appear in `wrangler.toml`, a committed `.env`,
 `.dev.vars.example`, GitHub Actions variables, issues, or logs. Local
 `.dev.vars` and `.env*` files are ignored by git.

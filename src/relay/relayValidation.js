@@ -17,21 +17,31 @@ export function validIdentifier(value, max) {
   return typeof value === "string" && value.length >= 1 && value.length <= max;
 }
 
+const ENVELOPE_FIELDS = new Set(["v", "room", "from", "to", "senderId", "deliveryId", "wake", "expiresAt", "nonce", "box", "recipientKeyId"]);
+
 export function validEnvelope(envelope, room, now = Date.now(), maximumTtlMs = MAX_ENVELOPE_TTL_MS) {
-  if (!envelope || typeof envelope !== "object" || envelope.v !== 1 || envelope.room !== room) return false;
-  const allowed = new Set(["v", "room", "from", "to", "senderId", "deliveryId", "wake", "expiresAt", "nonce", "box", "recipientKeyId"]);
-  if (Object.keys(envelope).some((key) => !allowed.has(key))) return false;
-  if (envelope.from !== "machine" && envelope.from !== "phone") return false;
-  if (envelope.to !== "machine" && envelope.to !== "phone" && envelope.to !== "all") return false;
-  if (!validIdentifier(envelope.senderId, 180)) return false;
-  if (envelope.deliveryId != null && !validIdentifier(envelope.deliveryId, 180)) return false;
-  if (envelope.recipientKeyId != null && !/^[a-f0-9]{64}$/.test(envelope.recipientKeyId)) return false;
-  if (envelope.wake != null && typeof envelope.wake !== "boolean") return false;
+  return envelopeProblem(envelope, room, now, maximumTtlMs) === null;
+}
+
+/**
+ * `null` for a deliverable envelope, `"expired"` for an otherwise well-formed
+ * envelope whose expiry already passed, and `"invalid"` for anything else.
+ */
+export function envelopeProblem(envelope, room, now = Date.now(), maximumTtlMs = MAX_ENVELOPE_TTL_MS) {
+  if (!envelope || typeof envelope !== "object" || envelope.v !== 1 || envelope.room !== room) return "invalid";
+  if (Object.keys(envelope).some((key) => !ENVELOPE_FIELDS.has(key))) return "invalid";
+  if (envelope.from !== "machine" && envelope.from !== "phone") return "invalid";
+  if (envelope.to !== "machine" && envelope.to !== "phone" && envelope.to !== "all") return "invalid";
+  if (!validIdentifier(envelope.senderId, 180)) return "invalid";
+  if (envelope.deliveryId != null && !validIdentifier(envelope.deliveryId, 180)) return "invalid";
+  if (envelope.recipientKeyId != null && !/^[a-f0-9]{64}$/.test(envelope.recipientKeyId)) return "invalid";
+  if (envelope.wake != null && typeof envelope.wake !== "boolean") return "invalid";
   if (envelope.expiresAt != null && (!Number.isSafeInteger(envelope.expiresAt)
-      || envelope.expiresAt <= now || envelope.expiresAt > now + maximumTtlMs)) return false;
-  if (typeof envelope.nonce !== "string" || !/^[A-Za-z0-9+/]{32}$/.test(envelope.nonce)) return false;
-  return typeof envelope.box === "string" && envelope.box.length >= 24
-    && /^[A-Za-z0-9+/]+={0,2}$/.test(envelope.box);
+      || envelope.expiresAt > now + maximumTtlMs)) return "invalid";
+  if (typeof envelope.nonce !== "string" || !/^[A-Za-z0-9+/]{32}$/.test(envelope.nonce)) return "invalid";
+  if (typeof envelope.box !== "string" || envelope.box.length < 24
+    || !/^[A-Za-z0-9+/]+={0,2}$/.test(envelope.box)) return "invalid";
+  return envelope.expiresAt != null && envelope.expiresAt <= now ? "expired" : null;
 }
 
 export function validDeviceToken(token) {

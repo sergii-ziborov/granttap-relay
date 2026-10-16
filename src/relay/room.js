@@ -2,7 +2,10 @@ import { initializeRoomTaskDispatch, handleRoomTaskDispatch, offerRoomTaskJobs,
   scheduleRoomTaskAlarm } from "../taskDispatch/worker-room.js";
 import { apnsConfigured, sendAPNs } from "./apnsWake.js";
 import { bearer, byteLength, constantTimeEqual, readJsonLimited, sha256, json } from "./relaySupport.js";
-import { validDeviceToken, validEnvelope, validIdentifier, validRoom, validRoomCredential } from "./relayValidation.js";
+import { envelopeProblem, validDeviceToken, validIdentifier, validRoom, validRoomCredential } from "./relayValidation.js";
+import { QUEUE_RESULT, queueOutcome } from "./connectionPolicy.js";
+import { acceptRoomFrame, closeRoomSocket, coolingUpgradeResponse, dropRoomMessage, initializeRoomSocketPolicy,
+  refuseCoolingRoomSocket, registerRoomSocketIdentity } from "./roomSockets.js";
 import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "./endpointDirectory.js";
 
 import { putDirectoryEndpoint } from "./endpointRetention.js";
@@ -19,7 +22,12 @@ const MAX_QUEUE_BYTES = 1_800_000;
 const MAX_PUSH_BODY_BYTES = 4_096;
 
 export class GrantTapRoom {
-  constructor(state, env) { this.state = state; this.env = env; initializeRoomTaskDispatch(this); }
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+    initializeRoomTaskDispatch(this);
+    initializeRoomSocketPolicy(this);
+  }
 
   async fetch(request) {
     const pathname = new URL(request.url).pathname;
@@ -38,28 +46,37 @@ export class GrantTapRoom {
     if (authError) return authError;
     const recipientKeyId = request.headers.get("X-GrantTap-Recipient-Key-Id") ?? undefined;
     if (recipientKeyId !== undefined && !validRecipientKeyId(recipientKeyId)) return json({ error: "invalid recipient" }, 400);
+    const cooling = coolingUpgradeResponse(this, room, recipientKeyId);
+    if (cooling) return cooling;
+    const relayControl = request.headers.get("X-GrantTap-Recipient-Routing") === "1";
     const pair = new WebSocketPair();
     this.state.acceptWebSocket(pair[1]);
     pair[1].serializeAttachment({ room, ...(recipientKeyId ? { recipientKeyId } : {}),
-      taskDispatch: request.headers.get("X-GrantTap-Task-Dispatch") === "1" });
-    if (request.headers.get("X-GrantTap-Recipient-Routing") === "1") {
+      ...(relayControl ? { relayControl } : {}), taskDispatch: request.headers.get("X-GrantTap-Task-Dispatch") === "1" });
+    if (relayControl) {
       pair[1].send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true }));
     }
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
   async webSocketMessage(ws, raw) {
-    if (typeof raw !== "string" || byteLength(raw) > MAX_WEBSOCKET_MESSAGE_BYTES) return;
+    if (typeof raw !== "string") return;
+    const known = ws.deserializeAttachment() ?? {};
+    if (byteLength(raw) > MAX_WEBSOCKET_MESSAGE_BYTES) return closeRoomSocket(this, ws, known, "oversize");
+    if (!acceptRoomFrame(this, ws)) return closeRoomSocket(this, ws, known, "rate-limit");
     let envelope;
     try { envelope = JSON.parse(raw); } catch { return; }
-    const known = ws.deserializeAttachment() ?? {};
     if (envelope?.type === "relay.ack" && validIdentifier(envelope.deliveryId, 180)) {
       if (known.role) await this.acknowledge(known.role, envelope.deliveryId);
       return;
     }
-    if (!validEnvelope(envelope, known.room, Date.now())) return;
+    const problem = envelopeProblem(envelope, known.room, Date.now());
+    if (problem === "expired") return dropRoomMessage(this, ws, known, envelope, "expired");
+    if (problem) return;
     if (!known.role) {
+      if (refuseCoolingRoomSocket(this, ws, known, envelope)) return;
       ws.serializeAttachment({ ...known, role: envelope.from });
+      registerRoomSocketIdentity(this, ws, known, envelope);
       await this.flushTo(envelope.from, ws);
       if (envelope.from === "machine" && known.taskDispatch) {
         await offerRoomTaskJobs(this);
@@ -68,10 +85,9 @@ export class GrantTapRoom {
     } else if (known.role !== envelope.from) return;
     const targets = this.targetsFor(ws, envelope);
     if (envelope.to !== "all" && envelope.deliveryId) {
-      if (!await this.queue(envelope.to, raw, envelope.deliveryId, envelope.expiresAt)) {
-        ws.close(1009, "queue capacity");
-        return;
-      }
+      const outcome = queueOutcome(await this.queue(envelope.to, raw, envelope.deliveryId, envelope.expiresAt));
+      if (outcome.close) return closeRoomSocket(this, ws, { ...known, role: envelope.from }, outcome.close, envelope);
+      if (outcome.drop) return dropRoomMessage(this, ws, { ...known, role: envelope.from }, envelope, outcome.drop);
     }
     for (const target of targets) {
       try { target.send(raw); } catch { /* stale hibernating socket */ }
@@ -87,18 +103,20 @@ export class GrantTapRoom {
     });
   }
 
+  /** Returns a `QUEUE_RESULT`, matching the Node store; a full mailbox evicts its oldest rows. */
   async queue(role, raw, deliveryId, expiresAt) {
     const rawBytes = byteLength(raw);
-    if (rawBytes > MAX_QUEUE_BYTES) return false;
+    if (rawBytes > MAX_QUEUE_BYTES) return QUEUE_RESULT.OVERSIZE;
     const key = `q:${role}`;
     const now = Date.now();
+    if (expiresAt != null && expiresAt <= now) return QUEUE_RESULT.EXPIRED;
     const queue = ((await this.state.storage.get(key)) ?? []).filter((item) => (item.expiresAt ?? now + DEFAULT_QUEUE_TTL_MS) > now);
-    if (deliveryId && queue.some((item) => item.deliveryId === deliveryId)) return true;
+    if (deliveryId && queue.some((item) => item.deliveryId === deliveryId)) return QUEUE_RESULT.DUPLICATE;
     queue.push({ raw, rawBytes, deliveryId, expiresAt: expiresAt ?? now + DEFAULT_QUEUE_TTL_MS });
     if (queue.length > HOLD_LIMIT) queue.splice(0, queue.length - HOLD_LIMIT);
     trimQueue(queue);
     await this.state.storage.put(key, queue);
-    return true;
+    return QUEUE_RESULT.STORED;
   }
 
   async acknowledge(role, deliveryId) {

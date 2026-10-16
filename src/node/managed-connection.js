@@ -1,8 +1,10 @@
+import { closeForPolicy } from "./socket-policy.js";
+
 /** Admission can be renewed only for the computer identity authenticated at upgrade. */
 export function armManagedExpiry(ws, ticket) {
   clearTimeout(ws.relayState.admissionTimer);
   ws.relayState.ticket = ticket;
-  ws.relayState.admissionTimer = setTimeout(() => ws.close(1008, "managed access renewal required"),
+  ws.relayState.admissionTimer = setTimeout(() => closeForPolicy(ws, "admission-expired"),
     ticket.expiresAt - Date.now());
   ws.relayState.admissionTimer.unref();
 }
@@ -16,7 +18,7 @@ export function renewManagedConnection(ws, value, verify) {
   if (!next || !current || state.role === "phone"
     || next.accountId !== current.accountId || next.computerId !== current.computerId
     || next.publicKey !== current.publicKey || next.expiresAt <= current.expiresAt) {
-    ws.close(1008, "managed admission renewal rejected");
+    closeForPolicy(ws, "admission-renewal-rejected");
     return true;
   }
   armManagedExpiry(ws, next);

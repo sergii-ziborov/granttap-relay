@@ -34,3 +34,28 @@ test("expired ciphertext is deleted from the database during queue read", (t) =>
   const row = store.db.prepare("SELECT phone_queue FROM rooms WHERE room = ?").get("room");
   assert.deepEqual(JSON.parse(row.phone_queue), []);
 });
+
+test("enqueue reports why a reliable frame was not retained", (t) => {
+  const store = temporaryStore(t);
+  assert.equal(store.enqueue("missing", "phone", "ciphertext", "orphan", Date.now() + 60_000), "no-room");
+  store.pinAuth("room", "digest");
+  assert.equal(store.enqueue("room", "phone", "ciphertext", "kept", Date.now() + 60_000), "stored");
+  assert.equal(store.enqueue("room", "phone", "ciphertext", "kept", Date.now() + 60_000), "duplicate");
+  assert.equal(store.enqueue("room", "phone", "ciphertext", "late", Date.now() - 1), "expired");
+  assert.equal(store.enqueue("room", "phone", "x".repeat(1_800_001), "large", Date.now() + 60_000), "oversize");
+  assert.equal(store.enqueue("room", "machine", "ciphertext", "default-ttl"), "stored");
+  assert.deepEqual(store.queue("room", "phone").map((item) => item.deliveryId), ["kept"]);
+  const rows = store.db.prepare("SELECT COUNT(*) AS count FROM rooms").get();
+  assert.equal(rows.count, 1, "a room-less enqueue never allocates a room");
+});
+
+test("a full mailbox evicts its oldest frames instead of refusing new ones", (t) => {
+  const store = temporaryStore(t);
+  store.pinAuth("room", "digest");
+  for (let index = 0; index < 101; index += 1) {
+    assert.equal(store.enqueue("room", "phone", `ciphertext-${index}`, `delivery-${index}`, Date.now() + 60_000), "stored");
+  }
+  const queue = store.queue("room", "phone");
+  assert.equal(queue.length, 100);
+  assert.equal(queue[0].deliveryId, "delivery-1");
+});

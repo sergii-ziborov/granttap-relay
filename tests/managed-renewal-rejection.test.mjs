@@ -36,6 +36,8 @@ test('renewal cannot change a paid socket identity, reuse an old lease or author
     const closed = once(socket, 'close');
     socket.send(JSON.stringify({ type: 'relay.admission', ticket: change === null ? 'invalid'
       : sign({ ...claim, expiresAt: Date.now() + 20_000, ...(phone ? {} : change) }) }));
-    assert.equal((await closed)[0], 1008);
+    const [code, reason] = await closed;
+    assert.equal(code, 4409);
+    assert.match(reason.toString(), /^admission-renewal-rejected/);
   }
 });

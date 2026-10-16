@@ -2,32 +2,34 @@ import { readJson, sendJson } from "./http-payloads.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocketServer } from "ws";
 import { apnsConfigured, sendAPNs } from "../relay/apnsWake.js";
-import { acceptsWebSocketPath, validBase64, validDeviceToken, validEnvelope, validIdentifier,
-  validRoom, validRoomCredential } from "../relay/relayValidation.js";
+import { acceptsWebSocketPath, validBase64, validDeviceToken, validRoom, validRoomCredential } from "../relay/relayValidation.js";
 import { RelayStore } from "./store.js";
 import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "../relay/endpointDirectory.js";
 import { managedAdmission } from "./managed-admission.js";
-import { armManagedExpiry, renewManagedConnection } from "./managed-connection.js";
+import { armManagedExpiry } from "./managed-connection.js";
 import { nodeAPNsRequest } from "./pushDelivery/http2.js";
 import { nodeTaskDispatchPump } from "../taskDispatch/socket-offers.js";
 import { taskDispatchResponse } from "../taskDispatch/index.js";
 import { configuredPushEnvironment } from "./pushDelivery/configuration.js";
-
-import { validRecipientKeyId, matchesRecipient, matchesQueuedRecipient } from "../relay/recipientRouting.js";
+import { CoolDownRegistry } from "../relay/coolDown.js";
+import { createRelayLog } from "../relay/relayLog.js";
+import { heartbeatIntervalFrom, markAlive, startHeartbeat } from "./heartbeat.js";
+import { handleSocketMessage, MAX_WEBSOCKET_MESSAGE_BYTES } from "./socket-messages.js";
+import { refuseUpgrade, upgradeRefusal } from "./upgrade-gate.js";
 
 const MAX_HTTP_BODY_BYTES = 40_000;
 const MAX_PUSH_BODY_BYTES = 4_096;
-const MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024;
 const PAIR_TTL_MS = 15 * 60 * 1000;
 const MAX_ROOM_SOCKETS = 32;
-const MAX_SOCKET_MESSAGES_PER_SECOND = 300;
 
 export function createRelayServer(options = {}) {
   const store = options.store ?? new RelayStore(options.databasePath ?? process.env.DATABASE_PATH ?? "/data/relay.sqlite3");
   const env = configuredPushEnvironment(options.env ?? process.env);
   const admission = managedAdmission(env);
+  const log = options.log ?? createRelayLog({ write: (line) => process.stdout.write(`${line}\n`) });
+  const policy = { coolDowns: options.coolDowns ?? new CoolDownRegistry(), log };
   const sockets = new Map();
   const offerJobs = nodeTaskDispatchPump(store.taskDispatch, sockets);
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WEBSOCKET_MESSAGE_BYTES });
@@ -40,30 +42,21 @@ export function createRelayServer(options = {}) {
     const room = url?.searchParams.get("room");
     const ticketHeader = request.headers["x-granttap-admission"];
     const ticket = admission ? admission(ticketHeader, room) : null;
-    if (!url || !acceptsWebSocketPath(url.pathname) || !validRoom(room) || !authorize(store, room, bearer(request))) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-      socket.destroy();
-      return;
-    }
-    if (admission && ticketHeader && !ticket) {
-      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
-      socket.destroy();
-      return;
-    }
-    if ((sockets.get(room)?.size ?? 0) >= MAX_ROOM_SOCKETS) {
-      socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
-      socket.destroy();
-      return;
-    }
     const recipientKeyId = request.headers["x-granttap-recipient-key-id"];
-    if (recipientKeyId !== undefined && !validRecipientKeyId(recipientKeyId)) {
-      socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
-      socket.destroy();
+    const authorized = Boolean(url && acceptsWebSocketPath(url.pathname) && validRoom(room)
+      && authorize(store, room, bearer(request)));
+    const refusal = upgradeRefusal({ authorized, admissionRequired: Boolean(admission), ticketHeader, ticket,
+      recipientKeyId, room, roomSize: sockets.get(room)?.size ?? 0, maxRoomSockets: MAX_ROOM_SOCKETS,
+      coolDowns: policy.coolDowns });
+    if (refusal) {
+      log("relay.upgrade_refused", { room, status: refusal.status, reason: refusal.reason, retryAfter: refusal.retryAfter });
+      refuseUpgrade(socket, refusal);
       return;
     }
+    const relayControl = request.headers["x-granttap-recipient-routing"] === "1";
     wss.handleUpgrade(request, socket, head, (ws) => {
-      ws.relayState = { room, role: null, commercial: !!admission, ticket,
-        windowStartedAt: Date.now(), windowMessages: 0, recipientKeyId,
+      ws.relayState = { room, role: null, commercial: !!admission, ticket, policy, relayControl,
+        windowStartedAt: Date.now(), windowMessages: 0, recipientKeyId, awaitingPong: false,
         taskDispatch: request.headers["x-granttap-task-dispatch"] === "1" };
       if (ticket) {
         armManagedExpiry(ws, ticket);
@@ -73,26 +66,32 @@ export function createRelayServer(options = {}) {
       roomSockets.add(ws);
       sockets.set(room, roomSockets);
       wss.emit("connection", ws);
-      if (request.headers["x-granttap-recipient-routing"] === "1") {
+      if (relayControl) {
         ws.send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true }));
       }
     });
   });
 
+  const wake = (room) => { void sendWakePush(store, room, env); };
   wss.on("connection", (ws) => {
+    ws.on("pong", () => markAlive(ws));
+    ws.on("ping", () => markAlive(ws));
     ws.on("message", (value, binary) => {
+      markAlive(ws);
       if (binary) return;
-      void handleMessage(ws, value.toString(), store, sockets, env, admission);
+      handleSocketMessage(ws, value.toString(), { store, sockets, admission, wake });
     });
     ws.on("close", () => removeSocket(ws, sockets));
     ws.on("error", () => removeSocket(ws, sockets));
   });
 
+  const stopHeartbeat = startHeartbeat(sockets, { log,
+    intervalMs: options.heartbeatIntervalMs ?? heartbeatIntervalFrom(env.RELAY_HEARTBEAT_MS) });
   const dispatchTimer = setInterval(() => { void offerJobs().catch(() => {}); }, options.taskDispatchIntervalMs ?? 1000);
   dispatchTimer.unref();
   const cleanup = setInterval(() => store.purgeExpiredPairings(), 60_000);
   cleanup.unref();
-  server.on("close", () => { clearInterval(cleanup); clearInterval(dispatchTimer); wss.close(); store.close(); });
+  server.on("close", () => { clearInterval(cleanup); clearInterval(dispatchTimer); stopHeartbeat(); wss.close(); store.close(); });
   return server;
 }
 
@@ -179,59 +178,6 @@ async function handlePush(request, response, store, env, url) {
     request.method === "DELETE");
   return sendJson(response, 200, { ok: true, registered: request.method !== "DELETE",
     enabled: apnsConfigured(env, body.environment), devices: tokens.length });
-}
-
-async function handleMessage(ws, raw, store, sockets, env, admission) {
-  if (Buffer.byteLength(raw) > MAX_WEBSOCKET_MESSAGE_BYTES) return ws.close(1009);
-  if (!acceptSocketMessage(ws.relayState)) return ws.close(1008, "rate limit");
-  let envelope;
-  try { envelope = JSON.parse(raw); } catch { return; }
-  if (renewManagedConnection(ws, envelope, admission)) return;
-  const state = ws.relayState;
-  if (envelope?.type === "relay.ack" && validIdentifier(envelope.deliveryId, 180)) {
-    if (state.role) store.acknowledge(state.room, state.role, envelope.deliveryId);
-    return;
-  }
-  if (!validEnvelope(envelope, state.room, Date.now())) return;
-  if (state.commercial && envelope.from === "machine"
-    && (!state.ticket || state.ticket.expiresAt <= Date.now())) {
-    return ws.close(1008, "managed computer admission required");
-  }
-  if (!state.role) {
-    state.role = envelope.from;
-    flushQueue(ws, store.queue(state.room, state.role));
-  } else if (state.role !== envelope.from) return;
-  if (envelope.to !== "all" && envelope.deliveryId) {
-    if (!store.enqueue(state.room, envelope.to, raw, envelope.deliveryId, envelope.expiresAt)) {
-      return ws.close(1009, "queue capacity");
-    }
-  }
-  for (const target of sockets.get(state.room) ?? []) {
-    if (target === ws || target.readyState !== WebSocket.OPEN) continue;
-    if (envelope.to === "all" || target.relayState?.role === envelope.to) {
-      if (matchesRecipient(envelope, target.relayState?.recipientKeyId)) target.send(raw);
-    }
-  }
-  if (envelope.to === "phone" && envelope.wake === true) {
-    void sendWakePush(store, state.room, env);
-  }
-}
-
-function acceptSocketMessage(state) {
-  const now = Date.now();
-  if (now - state.windowStartedAt >= 1_000) {
-    state.windowStartedAt = now;
-    state.windowMessages = 0;
-  }
-  state.windowMessages += 1;
-  return state.windowMessages <= MAX_SOCKET_MESSAGES_PER_SECOND;
-}
-
-function flushQueue(ws, queue) {
-  for (const item of queue) {
-    if (ws.readyState !== WebSocket.OPEN) break;
-    if (matchesQueuedRecipient(item.raw, ws.relayState.recipientKeyId)) ws.send(item.raw);
-  }
 }
 
 async function sendWakePush(store, room, env) {

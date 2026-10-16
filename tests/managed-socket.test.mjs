@@ -35,7 +35,9 @@ test("a modified controller cannot publish as a paid computer and expired admiss
   const denied = await connect();
   const deniedClose = once(denied, "close");
   denied.send(envelope("machine"));
-  assert.equal((await deniedClose)[0], 1008);
+  const [deniedCode, deniedReason] = await deniedClose;
+  assert.equal(deniedCode, 4403);
+  assert.equal(deniedReason.toString(), "admission-required; retry-after=5");
 
   const claim = { version: 1, accountId: "12345678-1234-4123-8123-123456789012",
     computerId: "22345678-1234-4123-8123-123456789012",
@@ -59,7 +61,9 @@ test("a modified controller cannot publish as a paid computer and expired admiss
   assert.equal(JSON.parse(answer[0].toString()).type, "relay.admission.accepted");
   await new Promise(resolve => setTimeout(resolve, 600));
   assert.equal(machine.readyState, WebSocket.OPEN, "The first ticket expiry must not interrupt a renewed computer");
-  assert.equal((await once(machine, "close"))[0], 1008);
+  const [expiredCode, expiredReason] = await once(machine, "close");
+  assert.equal(expiredCode, 4401);
+  assert.match(expiredReason.toString(), /^admission-expired; retry-after=\d+$/);
   const invalid = new WebSocket(url, { headers: { Authorization: `Bearer ${credential}`, "X-GrantTap-Admission": "invalid" } });
   sockets.push(invalid);
   const status = await new Promise(resolve => {

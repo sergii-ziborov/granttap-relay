@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { NodeTaskDispatchStore } from "../taskDispatch/node.js";
+import { QUEUE_RESULT } from "../relay/connectionPolicy.js";
 
 const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
 const HOLD_LIMIT = 100;
@@ -66,19 +67,22 @@ export class RelayStore {
     return live;
   }
 
+  /** Returns a `QUEUE_RESULT`; only `oversize` means the frame itself can never be retained. */
   enqueue(room, role, raw, deliveryId, expiresAt) {
     const rawBytes = Buffer.byteLength(raw);
-    if (rawBytes > MAX_QUEUE_BYTES || (expiresAt != null && expiresAt <= Date.now())
-      || !this.room(room)) return false;
+    if (rawBytes > MAX_QUEUE_BYTES) return QUEUE_RESULT.OVERSIZE;
+    if (expiresAt != null && expiresAt <= Date.now()) return QUEUE_RESULT.EXPIRED;
+    if (!this.room(room)) return QUEUE_RESULT.NO_ROOM;
     const queue = this.queue(room, role);
-    if (queue.some((item) => item.deliveryId === deliveryId)) return true;
+    if (queue.some((item) => item.deliveryId === deliveryId)) return QUEUE_RESULT.DUPLICATE;
     queue.push({ raw, rawBytes, deliveryId,
       expiresAt: expiresAt ?? Date.now() + DEFAULT_QUEUE_TTL_MS });
+    // A full mailbox evicts its oldest retained frames instead of refusing new ones.
     if (queue.length > HOLD_LIMIT) queue.splice(0, queue.length - HOLD_LIMIT);
     let bytes = queue.reduce((sum, item) => sum + item.rawBytes, 0);
     while (queue.length > 0 && bytes > MAX_QUEUE_BYTES) bytes -= queue.shift().rawBytes;
     this.writeQueue(room, role, queue);
-    return true;
+    return QUEUE_RESULT.STORED;
   }
 
   acknowledge(room, role, deliveryId) {

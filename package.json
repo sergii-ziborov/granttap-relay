@@ -28,7 +28,7 @@
   "homepage": "https://granttap.com",
   "license": "SEE LICENSE IN LICENSE",
   "overrides": {
-    "undici": "7.29.0"
+    "undici": "7.29.1"
   },
   "dependencies": {
     "ws": "^8.21.3"

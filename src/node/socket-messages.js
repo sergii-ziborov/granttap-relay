@@ -25,6 +25,9 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake }
   if (problem === "expired") return dropMessage(ws, envelope, "expired");
   if (problem) return;
   if (!state.role && refuseCoolingSocket(ws, envelope)) return;
+  if (state.commercial && state.ticket && envelope.from !== (state.ticket.role ?? "machine")) {
+    return closeForPolicy(ws, "admission-required", envelope);
+  }
   if (state.commercial && envelope.from === "machine" && !admittedSocket(state)) {
     return closeForPolicy(ws, admissionCloseToken(envelope), envelope);
   }

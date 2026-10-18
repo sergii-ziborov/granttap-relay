@@ -15,7 +15,8 @@ export function renewManagedConnection(ws, value, verify) {
   if (!state.commercial) return true;
   const next = verify?.(value.ticket, state.room);
   const current = state.ticket;
-  if (!next || !current || state.role === "phone"
+  if (!next || !current || next.version !== current.version || next.role !== current.role
+    || state.role && state.role !== (current.role ?? "machine")
     || next.accountId !== current.accountId || next.computerId !== current.computerId
     || next.publicKey !== current.publicKey || next.expiresAt <= current.expiresAt) {
     closeForPolicy(ws, "admission-renewal-rejected");

@@ -15,7 +15,9 @@ export function readManagedTicket(token, secret, room, now = Date.now()) {
   if (signature.length !== expected.length || !timingSafeEqual(signature, expected)) return null;
   try {
     const value = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
-    return value.version === 1 && UUID.test(value.accountId) && UUID.test(value.computerId)
+    const supported = value.version === 1 && value.role === undefined
+      || value.version === 2 && value.role === "phone";
+    return supported && UUID.test(value.accountId) && UUID.test(value.computerId)
       && PUBLIC_KEY.test(value.publicKey) && Buffer.from(value.publicKey, "base64").toString("base64") === value.publicKey
       && value.room === room && Number.isSafeInteger(value.expiresAt)
       && value.expiresAt > now && value.expiresAt <= now + 360_000 ? value : null;

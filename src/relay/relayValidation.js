@@ -1,4 +1,5 @@
 export const MAX_ENVELOPE_TTL_MS = 25 * 60 * 60 * 1000;
+const MAX_SUBMISSION_TTL_MS = 31 * 24 * 60 * 60 * 1000;
 
 export function validRoom(room) {
   return typeof room === "string" && /^[a-f0-9]{16,64}$/.test(room);
@@ -19,7 +20,7 @@ export function validIdentifier(value, max) {
 
 const ENVELOPE_FIELDS = new Set(["v", "room", "from", "to", "senderId", "deliveryId", "wake", "expiresAt", "nonce", "box", "recipientKeyId"]);
 
-export function validEnvelope(envelope, room, now = Date.now(), maximumTtlMs = MAX_ENVELOPE_TTL_MS) {
+export function validEnvelope(envelope, room, now = Date.now(), maximumTtlMs) {
   return envelopeProblem(envelope, room, now, maximumTtlMs) === null;
 }
 
@@ -27,7 +28,7 @@ export function validEnvelope(envelope, room, now = Date.now(), maximumTtlMs = M
  * `null` for a deliverable envelope, `"expired"` for an otherwise well-formed
  * envelope whose expiry already passed, and `"invalid"` for anything else.
  */
-export function envelopeProblem(envelope, room, now = Date.now(), maximumTtlMs = MAX_ENVELOPE_TTL_MS) {
+export function envelopeProblem(envelope, room, now = Date.now(), maximumTtlMs) {
   if (!envelope || typeof envelope !== "object" || envelope.v !== 1 || envelope.room !== room) return "invalid";
   if (Object.keys(envelope).some((key) => !ENVELOPE_FIELDS.has(key))) return "invalid";
   if (envelope.from !== "machine" && envelope.from !== "phone") return "invalid";
@@ -36,8 +37,12 @@ export function envelopeProblem(envelope, room, now = Date.now(), maximumTtlMs =
   if (envelope.deliveryId != null && !validIdentifier(envelope.deliveryId, 180)) return "invalid";
   if (envelope.recipientKeyId != null && !/^[a-f0-9]{64}$/.test(envelope.recipientKeyId)) return "invalid";
   if (envelope.wake != null && typeof envelope.wake !== "boolean") return "invalid";
+  const extended = envelope.from === 'phone' && envelope.to === 'machine'
+    && typeof envelope.deliveryId === 'string' && ['user-message-', 'attachment-']
+      .some(prefix => envelope.deliveryId.startsWith(prefix) && envelope.deliveryId.length > prefix.length);
+  const ttlLimit = maximumTtlMs ?? (extended ? MAX_SUBMISSION_TTL_MS : MAX_ENVELOPE_TTL_MS);
   if (envelope.expiresAt != null && (!Number.isSafeInteger(envelope.expiresAt)
-      || envelope.expiresAt > now + maximumTtlMs)) return "invalid";
+      || envelope.expiresAt > now + ttlLimit)) return "invalid";
   if (typeof envelope.nonce !== "string" || !/^[A-Za-z0-9+/]{32}$/.test(envelope.nonce)) return "invalid";
   if (typeof envelope.box !== "string" || envelope.box.length < 24
     || !/^[A-Za-z0-9+/]+={0,2}$/.test(envelope.box)) return "invalid";

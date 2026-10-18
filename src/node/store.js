@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { NodeTaskDispatchStore } from "../taskDispatch/node.js";
 import { QUEUE_RESULT } from "../relay/connectionPolicy.js";
+import { retainSubmission } from "../relay/submissionReceipts.js";
 
 const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
 const HOLD_LIMIT = 100;
@@ -75,14 +76,11 @@ export class RelayStore {
     if (!this.room(room)) return QUEUE_RESULT.NO_ROOM;
     const queue = this.queue(room, role);
     if (queue.some((item) => item.deliveryId === deliveryId)) return QUEUE_RESULT.DUPLICATE;
-    queue.push({ raw, rawBytes, deliveryId,
-      expiresAt: expiresAt ?? Date.now() + DEFAULT_QUEUE_TTL_MS });
-    // A full mailbox evicts its oldest retained frames instead of refusing new ones.
-    if (queue.length > HOLD_LIMIT) queue.splice(0, queue.length - HOLD_LIMIT);
-    let bytes = queue.reduce((sum, item) => sum + item.rawBytes, 0);
-    while (queue.length > 0 && bytes > MAX_QUEUE_BYTES) bytes -= queue.shift().rawBytes;
-    this.writeQueue(room, role, queue);
-    return QUEUE_RESULT.STORED;
+    const retained = retainSubmission(queue, { raw, rawBytes, deliveryId,
+      expiresAt: expiresAt ?? Date.now() + DEFAULT_QUEUE_TTL_MS }, HOLD_LIMIT, MAX_QUEUE_BYTES);
+    if (retained.result === QUEUE_RESULT.FULL) return QUEUE_RESULT.FULL;
+    this.writeQueue(room, role, retained.rows);
+    return retained.result;
   }
 
   acknowledge(room, role, deliveryId) {

@@ -14,7 +14,7 @@ export const CLOSE_POLICIES = Object.freeze({
 });
 
 export const QUEUE_RESULT = Object.freeze({
-  STORED: "stored", DUPLICATE: "duplicate", OVERSIZE: "oversize", EXPIRED: "expired", NO_ROOM: "no-room",
+  STORED: "stored", DUPLICATE: "duplicate", OVERSIZE: "oversize", EXPIRED: "expired", NO_ROOM: "no-room", FULL: "full",
 });
 
 export const MAX_SOCKET_MESSAGES_PER_SECOND = 300;
@@ -33,6 +33,7 @@ export function admissionCloseToken(envelope) {
 export function queueOutcome(result) {
   if (result === QUEUE_RESULT.STORED || result === QUEUE_RESULT.DUPLICATE) return { forward: true };
   if (result === QUEUE_RESULT.OVERSIZE) return { close: "oversize" };
+  if (result === QUEUE_RESULT.FULL) return { drop: "full" };
   return { drop: result === QUEUE_RESULT.NO_ROOM ? "no-room" : "expired" };
 }
 

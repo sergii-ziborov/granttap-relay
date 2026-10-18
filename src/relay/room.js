@@ -11,6 +11,7 @@ import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "./end
 import { putDirectoryEndpoint } from "./endpointRetention.js";
 
 import { validRecipientKeyId, matchesRecipient, matchesQueuedRecipient } from "./recipientRouting.js";
+import { isDurableSubmission, retainSubmission, storedSubmissionNotice } from "./submissionReceipts.js";
 
 const HOLD_LIMIT = 100;
 const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
@@ -85,9 +86,16 @@ export class GrantTapRoom {
     } else if (known.role !== envelope.from) return;
     const targets = this.targetsFor(ws, envelope);
     if (envelope.to !== "all" && envelope.deliveryId) {
-      const outcome = queueOutcome(await this.queue(envelope.to, raw, envelope.deliveryId, envelope.expiresAt));
+      let stored;
+      try { stored = await this.queue(envelope.to, raw, envelope.deliveryId, envelope.expiresAt); }
+      catch { return dropRoomMessage(this, ws, known, envelope, 'storage-unavailable'); }
+      const outcome = queueOutcome(stored);
       if (outcome.close) return closeRoomSocket(this, ws, { ...known, role: envelope.from }, outcome.close, envelope);
       if (outcome.drop) return dropRoomMessage(this, ws, { ...known, role: envelope.from }, envelope, outcome.drop);
+      if (known.relayControl && envelope.from === 'phone' && envelope.to === 'machine'
+          && isDurableSubmission(envelope.deliveryId)) {
+        ws.send(storedSubmissionNotice(envelope.deliveryId));
+      }
     }
     for (const target of targets) {
       try { target.send(raw); } catch { /* stale hibernating socket */ }
@@ -112,11 +120,11 @@ export class GrantTapRoom {
     if (expiresAt != null && expiresAt <= now) return QUEUE_RESULT.EXPIRED;
     const queue = ((await this.state.storage.get(key)) ?? []).filter((item) => (item.expiresAt ?? now + DEFAULT_QUEUE_TTL_MS) > now);
     if (deliveryId && queue.some((item) => item.deliveryId === deliveryId)) return QUEUE_RESULT.DUPLICATE;
-    queue.push({ raw, rawBytes, deliveryId, expiresAt: expiresAt ?? now + DEFAULT_QUEUE_TTL_MS });
-    if (queue.length > HOLD_LIMIT) queue.splice(0, queue.length - HOLD_LIMIT);
-    trimQueue(queue);
-    await this.state.storage.put(key, queue);
-    return QUEUE_RESULT.STORED;
+    const retained = retainSubmission(queue, { raw, rawBytes, deliveryId,
+      expiresAt: expiresAt ?? now + DEFAULT_QUEUE_TTL_MS }, HOLD_LIMIT, MAX_QUEUE_BYTES);
+    if (retained.result === QUEUE_RESULT.FULL) return QUEUE_RESULT.FULL;
+    await this.state.storage.put(key, retained.rows);
+    return retained.result;
   }
 
   async acknowledge(role, deliveryId) {
@@ -243,10 +251,4 @@ export class GrantTapRoom {
   tokensEqual(left, right) { return constantTimeEqual(left, right); }
   webSocketClose() {}
   webSocketError() {}
-}
-
-function trimQueue(queue) {
-  const itemBytes = (item) => typeof item === "string" ? byteLength(item) : (item.rawBytes ?? byteLength(item.raw ?? ""));
-  let total = queue.reduce((sum, item) => sum + itemBytes(item), 0);
-  while (queue.length > 0 && total > MAX_QUEUE_BYTES) total -= itemBytes(queue.shift());
 }

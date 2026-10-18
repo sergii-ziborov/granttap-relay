@@ -5,6 +5,7 @@ import { matchesQueuedRecipient, matchesRecipient } from "../relay/recipientRout
 import { envelopeProblem, validIdentifier } from "../relay/relayValidation.js";
 import { renewManagedConnection } from "./managed-connection.js";
 import { admittedSocket, closeForPolicy, refuseCoolingSocket } from "./socket-policy.js";
+import { isDurableSubmission, storedSubmissionNotice } from "../relay/submissionReceipts.js";
 
 export const MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024;
 
@@ -30,9 +31,16 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake }
   if (!state.role) registerRole(ws, envelope, store);
   else if (state.role !== envelope.from) return;
   if (envelope.to !== "all" && envelope.deliveryId) {
-    const outcome = queueOutcome(store.enqueue(state.room, envelope.to, raw, envelope.deliveryId, envelope.expiresAt));
+    let stored;
+    try { stored = store.enqueue(state.room, envelope.to, raw, envelope.deliveryId, envelope.expiresAt); }
+    catch { return dropMessage(ws, envelope, 'storage-unavailable'); }
+    const outcome = queueOutcome(stored);
     if (outcome.close) return closeForPolicy(ws, outcome.close);
     if (outcome.drop) return dropMessage(ws, envelope, outcome.drop);
+    if (state.relayControl && envelope.from === 'phone' && envelope.to === 'machine'
+        && isDurableSubmission(envelope.deliveryId) && ws.readyState === WebSocket.OPEN) {
+      ws.send(storedSubmissionNotice(envelope.deliveryId));
+    }
   }
   for (const target of sockets.get(state.room) ?? []) {
     if (target === ws || target.readyState !== WebSocket.OPEN) continue;

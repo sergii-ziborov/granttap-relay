@@ -14,7 +14,7 @@ export async function taskDispatchResponse({ method, pathname, room, authorize, 
     if (!owner) return { status: 403, body: { error: 'room owner required' } };
     if (method === 'GET') {
       const configuration = await store.configurations.get(room, configurationId);
-      return configuration ? { status: 200, body: { configuration } } : { status: 404, body: { error: 'unknown configuration' } };
+      return { status: 200, body: { configuration: configuration ?? null } };
     }
     if (method !== 'PUT') return { status: 405, body: { error: 'method not allowed' } };
     const { status, ...body } = await store.configurations.put(room, configurationId, await read(CONFIGURATION_BYTES));

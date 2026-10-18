@@ -23,6 +23,10 @@ test('Worker exposes only owner-authenticated encrypted latest configuration and
     `https://relay.test/task-job-configurations/${id}?room=${roomId}`, { method,
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       ...(value ? { body: JSON.stringify(value) } : {}) }));
+  const absent = await request('GET');
+  assert.equal(absent.status, 200); assert.deepEqual(await absent.json(), { configuration: null });
+  assert.equal(absent.headers.get('cache-control'), 'no-store');
+  assert.equal((await request('GET', undefined, 'f'.repeat(64))).status, 401);
   assert.equal((await request('PUT', body)).status, 201);
   assert.equal(alarm, expiresAt);
   const response = await request('GET');
@@ -32,4 +36,6 @@ test('Worker exposes only owner-authenticated encrypted latest configuration and
   assert.equal((await request('DELETE')).status, 405);
   await room.taskDispatch.maintain(expiresAt + 1);
   assert.equal(values.has(`task-configuration:${roomId}:${id}`), false);
+  const retired = await request('GET');
+  assert.equal(retired.status, 200); assert.deepEqual(await retired.json(), { configuration: null });
 });

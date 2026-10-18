@@ -54,7 +54,7 @@ The Worker does not provide:
 - model or coding-agent execution;
 - a plaintext Task, session, prompt, or conversation database;
 - a credential vault;
-- browser pairing, browser approvals, or a browser control plane;
+- a browser UI, passkey account service, or browser key storage;
 - access to a computer filesystem or shell.
 
 ## What the relay can and cannot see
@@ -87,8 +87,12 @@ agent-to-agent questions travel only inside the same opaque encrypted envelope
 format. Project keys and Task keys are granted by authorized endpoints; the
 Worker sees only the existing bounded routing metadata and ciphertext.
 
-The Personal relay has no browser approval, browser pairing, or vault endpoint.
-The WebSocket and Durable Object path carries authenticated ciphertext. APNs
+The Personal relay has no plaintext browser approval or vault endpoint. The
+official browser client uses the account service for subscription verification
+and a room- and controller-bound relay lease. Its encryption keys stay in browser
+storage, accessible to website code in that origin; the native apps provide
+stronger key isolation. The WebSocket and Durable Object path carries
+authenticated ciphertext. APNs
 receives only a fixed generic alert and neutral wake flag, never the encrypted
 envelope or its task metadata. One task key cannot decrypt a second task; a
 device can open that second task only if its independent key was explicitly

@@ -19,6 +19,8 @@ test('latest encrypted Project configuration survives relay restart and replacem
   t.after(() => { relay.close(); rmSync(root, { recursive: true, force: true }); });
   const call = (method, value, owner = true) => taskDispatchResponse({ method, pathname: `/task-job-configurations/${id}`,
     room, authorize: () => owner, read: async () => value, store: relay.taskDispatch });
+  assert.deepEqual(await call("GET"), { status: 200, body: { configuration: null } });
+  assert.equal((await call("GET", null, false)).status, 401);
   const first = configuration();
   assert.equal((await call('PUT', first)).status, 201);
   relay.close(); relay = new RelayStore(path);
@@ -51,7 +53,7 @@ test('expired configurations retire and oversized or plaintext configuration bod
   assert.equal((await call('PUT', { ...first, envelope: { ...first.envelope, box: 'B'.repeat(100_000) } })).status, 400);
   assert.equal((await call('PUT', first)).status, 201);
   t.mock.method(Date, 'now', () => first.expiresAt + 1);
-  assert.equal((await call('GET')).status, 404);
+  assert.deepEqual(await call('GET'), { status: 200, body: { configuration: null } });
 });
 
 test('concurrent Project configuration writes share SQLite without overlapping open transactions', async t => {

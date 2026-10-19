@@ -45,14 +45,19 @@ export function createRelayServer(options = {}) {
     const ticketHeader = request.headers["x-granttap-admission"];
     const ticket = admission ? admission(ticketHeader, room) : null;
     const recipientKeyId = request.headers["x-granttap-recipient-key-id"];
+    const credential = bearer(request);
     const authorized = Boolean(url && acceptsWebSocketPath(url.pathname) && validRoom(room)
-      && authorize(store, room, bearer(request)));
+      && authorizeUpgrade(store, room, credential));
     const refusal = upgradeRefusal({ authorized, admissionRequired: Boolean(admission), ticketHeader, ticket,
       recipientKeyId, room, roomSize: sockets.get(room)?.size ?? 0, maxRoomSockets: MAX_ROOM_SOCKETS,
       coolDowns: policy.coolDowns });
     if (refusal) {
       log("relay.upgrade_refused", { room, status: refusal.status, reason: refusal.reason, retryAfter: refusal.retryAfter });
       refuseUpgrade(socket, refusal);
+      return;
+    }
+    if (!authorize(store, room, credential)) {
+      refuseUpgrade(socket, { status: 401, reason: 'unauthorized' });
       return;
     }
     const relayControl = request.headers["x-granttap-recipient-routing"] === "1";
@@ -197,8 +202,19 @@ function authorize(store, room, credential, pin = true) {
   const current = store.authDigest(room);
   if (!current && !pin) return false;
   const expected = current ?? store.pinAuth(room, digest);
-  const left = Buffer.from(digest, "hex");
-  const right = Buffer.from(expected, "hex");
+  return equalDigest(digest, expected);
+}
+
+/** Policy refusals must stay read-only, even when the caller invents a new room. */
+function authorizeUpgrade(store, room, credential) {
+  if (!validRoomCredential(credential)) return false;
+  const current = store.authDigest(room);
+  return !current || equalDigest(createHash('sha256').update(credential).digest('hex'), current);
+}
+
+function equalDigest(supplied, expected) {
+  const left = Buffer.from(supplied, 'hex');
+  const right = Buffer.from(expected, 'hex');
   return left.length === right.length && timingSafeEqual(left, right);
 }
 

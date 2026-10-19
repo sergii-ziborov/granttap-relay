@@ -27,6 +27,7 @@ when a cool-down was recorded. Reasons never contain identifiers or ciphertext.
 
 | Code | Reason token | When | Cool-down |
 | --- | --- | --- | --- |
+| 1013 | `backpressure; retry-after=5` | Node outgoing socket or aggregate ciphertext buffers are full | client waits; reliable ciphertext remains stored |
 | 4401 | `admission-expired` | An admitted computer's lease ran out without renewal (Node, managed mode) | yes, cleared by a valid lease |
 | 4403 | `admission-required` | A `machine` frame from a socket without a valid managed lease | yes, cleared by a valid lease |
 | 4406 | `hub-admission-required` | The same, when the sender id has the iPhone hub's `hub-` prefix | yes, cleared by a valid lease |
@@ -92,6 +93,12 @@ token, retry delay and a `suppressed` count. Each event/room/role/reason key is
 written at most once per 10 s and all lines are capped at 50 per second, so a
 reconnect storm cannot flood the disk. Tokens, keys, sender ids, envelopes and
 IP addresses are never logged; nginx keeps its own access policy.
+
+Node also records `relay.slow_receiver` without content when outgoing buffers
+fill. [Bounded socket delivery](../node/socketDelivery/README.md) owns the per
+socket and aggregate budgets. Duplicate ACKs and identical endpoint records do
+not rewrite SQLite. Authentication reads only the credential digest and queue
+reads select one role, avoiding copies of another role's ciphertext backlog.
 
 ### Phone hub links in managed mode (open decision)
 

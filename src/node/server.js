@@ -18,6 +18,7 @@ import { createRelayLog } from "../relay/relayLog.js";
 import { heartbeatIntervalFrom, markAlive, startHeartbeat } from "./heartbeat.js";
 import { handleSocketMessage, MAX_WEBSOCKET_MESSAGE_BYTES } from "./socket-messages.js";
 import { refuseUpgrade, upgradeRefusal } from "./upgrade-gate.js";
+import { createSocketDelivery } from './socketDelivery/index.js';
 
 const MAX_HTTP_BODY_BYTES = 40_000;
 const MAX_PUSH_BODY_BYTES = 4_096;
@@ -31,6 +32,7 @@ export function createRelayServer(options = {}) {
   const log = options.log ?? createRelayLog({ write: (line) => process.stdout.write(`${line}\n`) });
   const policy = { coolDowns: options.coolDowns ?? new CoolDownRegistry(), log };
   const sockets = new Map();
+  const delivery = createSocketDelivery({ log });
   const offerJobs = nodeTaskDispatchPump(store.taskDispatch, sockets);
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WEBSOCKET_MESSAGE_BYTES });
   const server = createServer((request, response) => {
@@ -79,7 +81,7 @@ export function createRelayServer(options = {}) {
     ws.on("message", (value, binary) => {
       markAlive(ws);
       if (binary) return;
-      handleSocketMessage(ws, value.toString(), { store, sockets, admission, wake });
+      handleSocketMessage(ws, value.toString(), { store, sockets, admission, wake, delivery });
     });
     ws.on("close", () => removeSocket(ws, sockets));
     ws.on("error", () => removeSocket(ws, sockets));

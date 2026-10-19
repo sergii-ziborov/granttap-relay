@@ -3,6 +3,9 @@ name: granttap-relay
 services:
   relay:
     build: .
+    labels:
+      io.hostwatch.workload: granttap-relay
+      io.podman.compose.service: relay
     restart: unless-stopped
     init: true
     env_file:

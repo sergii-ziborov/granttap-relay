@@ -10,7 +10,7 @@ import { isDurableSubmission, storedSubmissionNotice } from "../relay/submission
 export const MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024;
 
 /** Routes one text frame from an authenticated Node relay socket. */
-export function handleSocketMessage(ws, raw, { store, sockets, admission, wake }) {
+export function handleSocketMessage(ws, raw, { store, sockets, admission, wake, delivery }) {
   const state = ws.relayState;
   if (Buffer.byteLength(raw) > MAX_WEBSOCKET_MESSAGE_BYTES) return closeForPolicy(ws, "oversize");
   if (!acceptSocketFrame(state)) return closeForPolicy(ws, "rate-limit");
@@ -31,7 +31,7 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake }
   if (state.commercial && envelope.from === "machine" && !admittedSocket(state)) {
     return closeForPolicy(ws, admissionCloseToken(envelope), envelope);
   }
-  if (!state.role) registerRole(ws, envelope, store);
+  if (!state.role) registerRole(ws, envelope, store, delivery);
   else if (state.role !== envelope.from) return;
   if (envelope.to !== "all" && envelope.deliveryId) {
     let stored;
@@ -42,26 +42,31 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake }
     if (outcome.drop) return dropMessage(ws, envelope, outcome.drop);
     if (state.relayControl && envelope.from === 'phone' && envelope.to === 'machine'
         && isDurableSubmission(envelope.deliveryId) && ws.readyState === WebSocket.OPEN) {
-      ws.send(storedSubmissionNotice(envelope.deliveryId));
+      const receipt = storedSubmissionNotice(envelope.deliveryId);
+      if (delivery) delivery.send(ws, receipt); else ws.send(receipt);
     }
   }
   for (const target of sockets.get(state.room) ?? []) {
     if (target === ws || target.readyState !== WebSocket.OPEN) continue;
     if (envelope.to === "all" || target.relayState?.role === envelope.to) {
-      if (matchesRecipient(envelope, target.relayState?.recipientKeyId)) target.send(raw);
+      if (matchesRecipient(envelope, target.relayState?.recipientKeyId)) {
+        if (delivery) delivery.send(target, raw); else target.send(raw);
+      }
     }
   }
   if (envelope.to === "phone" && envelope.wake === true) wake?.(state.room);
 }
 
-function registerRole(ws, envelope, store) {
+function registerRole(ws, envelope, store, delivery) {
   const state = ws.relayState;
   state.role = envelope.from;
   state.identity = socketIdentity({ room: state.room, recipientKeyId: state.recipientKeyId,
     role: state.role, senderId: envelope.senderId });
   for (const item of store.queue(state.room, state.role)) {
     if (ws.readyState !== WebSocket.OPEN) break;
-    if (matchesQueuedRecipient(item.raw, state.recipientKeyId)) ws.send(item.raw);
+    if (matchesQueuedRecipient(item.raw, state.recipientKeyId)) {
+      if (delivery) delivery.send(ws, item.raw); else ws.send(item.raw);
+    }
   }
 }
 

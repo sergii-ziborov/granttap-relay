@@ -41,6 +41,11 @@ export class RelayStore {
       ON CONFLICT(room) DO UPDATE SET updated_at=excluded.updated_at
     `);
     this.roomStatement = this.db.prepare("SELECT * FROM rooms WHERE room = ?");
+    this.authStatement = this.db.prepare("SELECT auth_sha256 FROM rooms WHERE room = ?");
+    this.queueStatements = Object.fromEntries(['machine', 'phone'].map(role => [role, {
+      read: this.db.prepare(`SELECT ${role}_queue AS value FROM rooms WHERE room = ?`),
+      write: this.db.prepare(`UPDATE rooms SET ${role}_queue = ?, updated_at = ? WHERE room = ?`),
+    }]));
     this.taskDispatch = new NodeTaskDispatchStore(this.db);
   }
 
@@ -48,7 +53,7 @@ export class RelayStore {
     return this.roomStatement.get(room);
   }
 
-  authDigest(room) { return this.room(room)?.auth_sha256 ?? null; }
+  authDigest(room) { return this.authStatement.get(room)?.auth_sha256 ?? null; }
 
   pinAuth(room, digest) {
     this.ensureRoom.run(room, Date.now());
@@ -59,10 +64,10 @@ export class RelayStore {
   }
 
   queue(room, role) {
-    const column = queueColumn(role);
-    const row = this.room(room);
+    queueColumn(role);
+    const row = this.queueStatements[role].read.get(room);
     if (!row) return [];
-    const stored = parseArray(row[column]);
+    const stored = parseArray(row.value);
     const live = stored.filter((item) => item.expiresAt > Date.now());
     if (live.length !== stored.length) this.writeQueue(room, role, live);
     return live;
@@ -84,13 +89,14 @@ export class RelayStore {
   }
 
   acknowledge(room, role, deliveryId) {
-    this.writeQueue(room, role, this.queue(room, role).filter((item) => item.deliveryId !== deliveryId));
+    const queue = this.queue(room, role);
+    const remaining = queue.filter((item) => item.deliveryId !== deliveryId);
+    if (remaining.length !== queue.length) this.writeQueue(room, role, remaining);
   }
 
   writeQueue(room, role, queue) {
-    const column = queueColumn(role);
-    this.db.prepare(`UPDATE rooms SET ${column} = ?, updated_at = ? WHERE room = ?`)
-      .run(JSON.stringify(queue), Date.now(), room);
+    queueColumn(role);
+    this.queueStatements[role].write.run(JSON.stringify(queue), Date.now(), room);
   }
 
   pushTokens(room) { return parseArray(this.room(room)?.push_tokens ?? "[]"); }
@@ -155,7 +161,8 @@ export class RelayStore {
       .get(prefix, `${prefix}:%`).count;
     if (!this.endpoint(room) && count >= 32) return false;
     this.db.prepare(`INSERT INTO endpoint_directory(room, nonce, box, expires_at) VALUES (?, ?, ?, ?)
-      ON CONFLICT(room) DO UPDATE SET nonce=excluded.nonce, box=excluded.box, expires_at=excluded.expires_at`)
+      ON CONFLICT(room) DO UPDATE SET nonce=excluded.nonce, box=excluded.box, expires_at=excluded.expires_at
+      WHERE nonce != excluded.nonce OR box != excluded.box OR expires_at != excluded.expires_at`)
       .run(room, record.nonce, record.box, record.expiresAt);
     return true;
   }

@@ -1,0 +1,11 @@
+# Optional operator-installed integration. Keys are never supplied by clients.
+services:
+  relay:
+    environment:
+      HOSTWATCH_CLIENT_ACCESS_SITE: granttap
+      HOSTWATCH_CLIENT_ACCESS_SOCKET: /hostwatch-client-access/api.sock
+      HOSTWATCH_CLIENT_ACCESS_KEY_FILE: /run/secrets/hostwatch-client-access.key
+      HOSTWATCH_TRUSTED_PROXY_IPS: 10.88.0.1
+    volumes:
+      - /run/hostwatch-client-access:/hostwatch-client-access:ro
+      - /srv/secrets/hostwatch-client-access/granttap.key:/run/secrets/hostwatch-client-access.key:ro

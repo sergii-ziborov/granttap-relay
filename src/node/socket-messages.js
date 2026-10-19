@@ -60,7 +60,7 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake, 
 function registerRole(ws, envelope, store, delivery) {
   const state = ws.relayState;
   state.role = envelope.from;
-  state.identity = socketIdentity({ room: state.room, recipientKeyId: state.recipientKeyId,
+  state.identity ??= socketIdentity({ room: state.room, recipientKeyId: state.recipientKeyId,
     role: state.role, senderId: envelope.senderId });
   for (const item of store.queue(state.room, state.role)) {
     if (ws.readyState !== WebSocket.OPEN) break;

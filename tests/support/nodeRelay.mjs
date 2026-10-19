@@ -13,7 +13,7 @@ export const credential = "b".repeat(64);
 const secret = Buffer.alloc(32, 7);
 
 /** Starts a Node relay on a random loopback port; everything is torn down after the test. */
-export async function startRelay(t, { managed = false, coolDowns, heartbeatIntervalMs, Store = RelayStore } = {}) {
+export async function startRelay(t, { managed = false, coolDowns, heartbeatIntervalMs, clientAccess, Store = RelayStore } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "granttap-policy-"));
   const env = {};
   if (managed) {
@@ -24,7 +24,7 @@ export async function startRelay(t, { managed = false, coolDowns, heartbeatInter
   const lines = [];
   const raw = [];
   const store = new Store(join(dir, "relay.sqlite3"));
-  const server = createRelayServer({ store, env, coolDowns, heartbeatIntervalMs,
+  const server = createRelayServer({ store, env, coolDowns, heartbeatIntervalMs, clientAccess,
     log: createRelayLog({ intervalMs: 0, write: (line) => { raw.push(line); lines.push(JSON.parse(line)); } }) });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const sockets = [];

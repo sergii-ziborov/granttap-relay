@@ -7,7 +7,7 @@ import { apnsConfigured, sendAPNs } from "../relay/apnsWake.js";
 import { acceptsWebSocketPath, validBase64, validDeviceToken, validRoom, validRoomCredential } from "../relay/relayValidation.js";
 import { RelayStore } from "./store.js";
 import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "../relay/endpointDirectory.js";
-import { managedAdmission } from "./managed-admission.js";
+import { managedAdmission, managedCooldownIdentity } from "./managed-admission.js";
 import { armManagedExpiry } from "./managed-connection.js";
 import { nodeAPNsRequest } from "./pushDelivery/http2.js";
 import { nodeTaskDispatchPump } from "../taskDispatch/socket-offers.js";
@@ -19,6 +19,8 @@ import { heartbeatIntervalFrom, markAlive, startHeartbeat } from "./heartbeat.js
 import { handleSocketMessage, MAX_WEBSOCKET_MESSAGE_BYTES } from "./socket-messages.js";
 import { refuseUpgrade, upgradeRefusal } from "./upgrade-gate.js";
 import { createSocketDelivery } from './socketDelivery/index.js';
+import { clientAccessFromEnv } from './hostwatch-client.mjs';
+import { clientIdentity, setClientDecision, trackClientConnection } from './client-access.js';
 
 const MAX_HTTP_BODY_BYTES = 40_000;
 const MAX_PUSH_BODY_BYTES = 4_096;
@@ -29,6 +31,7 @@ export function createRelayServer(options = {}) {
   const store = options.store ?? new RelayStore(options.databasePath ?? process.env.DATABASE_PATH ?? "/data/relay.sqlite3");
   const env = configuredPushEnvironment(options.env ?? process.env);
   const admission = managedAdmission(env);
+  const clientAccess = options.clientAccess ?? clientAccessFromEnv(env);
   const log = options.log ?? createRelayLog({ write: (line) => process.stdout.write(`${line}\n`) });
   const policy = { coolDowns: options.coolDowns ?? new CoolDownRegistry(), log };
   const sockets = new Map();
@@ -36,10 +39,27 @@ export function createRelayServer(options = {}) {
   const offerJobs = nodeTaskDispatchPump(store.taskDispatch, sockets);
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WEBSOCKET_MESSAGE_BYTES });
   const server = createServer((request, response) => {
-    void routeHttp(request, response, store, env).catch(() => sendJson(response, 500, { error: "internal error" }));
+    void (async () => {
+      const url = requestUrl(request);
+      if (clientAccess && url?.pathname !== '/health') {
+        const room = url?.searchParams.get('room');
+        const ticket = admission?.(request.headers['x-granttap-admission'], room);
+        // A signed room-bound admission proves quota identity. The endpoint
+        // still verifies its own room/writer credential before any data access.
+        const d = await clientAccess.admit(clientIdentity(ticket, request, env));
+        setClientDecision(response, d);
+        if (!d.allowed) { response.setHeader('Retry-After', String(d.retryAfter || 5)); return sendJson(response, 429, { error: 'Client allowance reached', reason: d.reason }); }
+      }
+      return routeHttp(request, response, store, env);
+    })().catch(() => sendJson(response, 500, { error: "internal error" }));
   });
 
-  server.on("upgrade", (request, socket, head) => {
+  wss.on('headers', (headers, request) => {
+    const d = request.clientAccessDecision;
+    if (d) headers.push(`X-Hostwatch-Client-Category: ${d.category}`, 'X-Hostwatch-Client-Limit: none');
+  });
+
+  server.on("upgrade", (request, socket, head) => { void (async () => {
     const url = requestUrl(request);
     const room = url?.searchParams.get("room");
     const ticketHeader = request.headers["x-granttap-admission"];
@@ -53,22 +73,31 @@ export function createRelayServer(options = {}) {
       coolDowns: policy.coolDowns });
     if (refusal) {
       log("relay.upgrade_refused", { room, status: refusal.status, reason: refusal.reason, retryAfter: refusal.retryAfter });
-      refuseUpgrade(socket, refusal);
+      const category = ticket ? clientIdentity(ticket, request, env).category : 'anonymous';
+      refuseUpgrade(socket, { ...refusal, category, limitReason: refusal.reason === 'cool-down' ? 'relay-cooldown' : refusal.reason === 'room-full' ? 'relay-room-capacity' : undefined });
       return;
     }
+    const decision = clientAccess ? await clientAccess.admit(clientIdentity(ticket, request, env), 'connect') : null;
+    if (decision && !decision.allowed) {
+      refuseUpgrade(socket, { status: 429, reason: decision.reason, retryAfter: decision.retryAfter || 5, category: decision.category });
+      return;
+    }
+    request.clientAccessDecision = decision;
+    if (socket.destroyed) { if (decision?.leaseId) void clientAccess.admit(clientIdentity(ticket, request, env), 'release', decision.leaseId); return; }
     if (!authorize(store, room, credential)) {
       refuseUpgrade(socket, { status: 401, reason: 'unauthorized' });
       return;
     }
     const relayControl = request.headers["x-granttap-recipient-routing"] === "1";
     wss.handleUpgrade(request, socket, head, (ws) => {
-      ws.relayState = { room, role: null, commercial: !!admission, ticket, policy, relayControl,
+      ws.relayState = { room, role: null, identity: managedCooldownIdentity(ticket), commercial: !!admission, ticket, policy, relayControl,
         windowStartedAt: Date.now(), windowMessages: 0, recipientKeyId, awaitingPong: false,
         taskDispatch: request.headers["x-granttap-task-dispatch"] === "1" };
       if (ticket) {
         armManagedExpiry(ws, ticket);
         ws.on("close", () => clearTimeout(ws.relayState.admissionTimer));
       }
+      trackClientConnection(ws, clientAccess, request, env, decision);
       const roomSockets = sockets.get(room) ?? new Set();
       roomSockets.add(ws);
       sockets.set(room, roomSockets);
@@ -77,7 +106,7 @@ export function createRelayServer(options = {}) {
         ws.send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true }));
       }
     });
-  });
+  })().catch(() => socket.destroy()); });
 
   const wake = (room) => { void sendWakePush(store, room, env); };
   wss.on("connection", (ws) => {
@@ -98,7 +127,17 @@ export function createRelayServer(options = {}) {
   dispatchTimer.unref();
   const cleanup = setInterval(() => store.purgeExpiredPairings(), 60_000);
   cleanup.unref();
-  server.on("close", () => { clearInterval(cleanup); clearInterval(dispatchTimer); stopHeartbeat(); wss.close(); store.close(); });
+  server.on("close", () => { clearInterval(cleanup); clearInterval(dispatchTimer); stopHeartbeat(); clientAccess?.close?.(); wss.close(); store.close(); });
+  server.shutdown = async () => {
+    // Let healthy clients receive a restart close, then release their private
+    // quota leases before the new instance accepts reconnects.
+    const force = setTimeout(() => { for (const peers of sockets.values()) for (const ws of peers) ws.terminate(); }, 1000);
+    force.unref();
+    for (const peers of sockets.values()) for (const ws of peers) ws.close(1001, 'service-restart');
+    await new Promise(resolve => server.close(resolve));
+    clearTimeout(force);
+    await clientAccess?.close?.();
+  };
   return server;
 }
 
@@ -238,7 +277,9 @@ function removeSocket(ws, sockets) {
 const isEntryPoint = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isEntryPoint) {
   const port = Number(process.env.PORT ?? 3201);
-  createRelayServer().listen(port, process.env.HOST ?? "0.0.0.0", () => {
+  const server = createRelayServer();
+  server.listen(port, process.env.HOST ?? "0.0.0.0", () => {
     process.stdout.write(`GrantTap relay listening on port ${port}\n`);
   });
+  for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => { void server.shutdown().finally(() => process.exit(0)); });
 }

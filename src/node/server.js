@@ -84,7 +84,14 @@ export function createRelayServer(options = {}) {
     }
     request.clientAccessDecision = decision;
     if (socket.destroyed) { if (decision?.leaseId) void clientAccess.admit(clientIdentity(ticket, request, env), 'release', decision.leaseId); return; }
+    // Admission is asynchronous: another connection may have filled this room.
+    if ((sockets.get(room)?.size ?? 0) >= MAX_ROOM_SOCKETS) {
+      if (decision?.leaseId) void clientAccess.admit(clientIdentity(ticket, request, env), 'release', decision.leaseId);
+      refuseUpgrade(socket, { status: 429, reason: 'room-full', retryAfter: 5, category: decision?.category, limitReason: 'relay-room-capacity' });
+      return;
+    }
     if (!authorize(store, room, credential)) {
+      if (decision?.leaseId) void clientAccess.admit(clientIdentity(ticket, request, env), 'release', decision.leaseId);
       refuseUpgrade(socket, { status: 401, reason: 'unauthorized' });
       return;
     }

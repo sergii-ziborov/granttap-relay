@@ -11,6 +11,7 @@ export const MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024;
 
 /** Routes one text frame from an authenticated Node relay socket. */
 export function handleSocketMessage(ws, raw, { store, sockets, admission, wake, delivery }) {
+  const started = performance.now();
   const state = ws.relayState;
   if (Buffer.byteLength(raw) > MAX_WEBSOCKET_MESSAGE_BYTES) return closeForPolicy(ws, "oversize");
   if (!acceptSocketFrame(state)) return closeForPolicy(ws, "rate-limit");
@@ -31,6 +32,7 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake, 
   if (state.commercial && envelope.from === "machine" && !admittedSocket(state)) {
     return closeForPolicy(ws, admissionCloseToken(envelope), envelope);
   }
+  store.metrics?.record('received');
   if (!state.role) registerRole(ws, envelope, store, delivery);
   else if (state.role !== envelope.from) return;
   if (envelope.to !== "all" && envelope.deliveryId) {
@@ -50,7 +52,8 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake, 
     if (target === ws || target.readyState !== WebSocket.OPEN) continue;
     if (envelope.to === "all" || target.relayState?.role === envelope.to) {
       if (matchesRecipient(envelope, target.relayState?.recipientKeyId)) {
-        if (delivery) delivery.send(target, raw); else target.send(raw);
+        const sent = delivery ? delivery.send(target, raw) : (target.send(raw), true);
+        if (sent) { store.metrics?.record('forwarded'); store.metrics?.timing('forward', performance.now() - started); }
       }
     }
   }
@@ -65,7 +68,8 @@ function registerRole(ws, envelope, store, delivery) {
   for (const item of store.queue(state.room, state.role)) {
     if (ws.readyState !== WebSocket.OPEN) break;
     if (matchesQueuedRecipient(item.raw, state.recipientKeyId)) {
-      if (delivery) delivery.send(ws, item.raw); else ws.send(item.raw);
+      const sent = delivery ? delivery.send(ws, item.raw) : (ws.send(item.raw), true);
+      if (sent) { store.metrics?.record('forwarded'); if (Number.isFinite(item.queuedAt)) store.metrics?.timing('forward', Date.now() - item.queuedAt); }
     }
   }
 }

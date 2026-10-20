@@ -19,6 +19,7 @@ import { heartbeatIntervalFrom, markAlive, startHeartbeat } from "./heartbeat.js
 import { handleSocketMessage, MAX_WEBSOCKET_MESSAGE_BYTES } from "./socket-messages.js";
 import { refuseUpgrade, upgradeRefusal } from "./upgrade-gate.js";
 import { createSocketDelivery } from './socketDelivery/index.js';
+import { createRelayCapacity } from './capacity/index.js';
 import { clientAccessFromEnv } from './hostwatch-client.mjs';
 import { clientIdentity, setClientDecision, trackClientConnection } from './client-access.js';
 
@@ -32,13 +33,19 @@ export function createRelayServer(options = {}) {
   const env = configuredPushEnvironment(options.env ?? process.env);
   const admission = managedAdmission(env);
   const clientAccess = options.clientAccess ?? clientAccessFromEnv(env);
-  const log = options.log ?? createRelayLog({ write: (line) => process.stdout.write(`${line}\n`) });
-  const policy = { coolDowns: options.coolDowns ?? new CoolDownRegistry(), log };
+  const baseLog = options.log ?? createRelayLog({ write: (line) => process.stdout.write(`${line}\n`) });
+
   const sockets = new Map();
+  let capacity;
+  const log = (event, fields) => { capacity?.log(event); return baseLog(event, fields); };
   const delivery = createSocketDelivery({ log });
+  capacity = createRelayCapacity({store,sockets,delivery,env});
+  store.metrics = capacity;
+  const policy = { coolDowns: options.coolDowns ?? new CoolDownRegistry(), log };
   const offerJobs = nodeTaskDispatchPump(store.taskDispatch, sockets);
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WEBSOCKET_MESSAGE_BYTES });
   const server = createServer((request, response) => {
+    response.once('finish', () => { if (response.statusCode === 429) capacity.record('limited429'); });
     void (async () => {
       const url = requestUrl(request);
       if (clientAccess && url?.pathname !== '/health') {
@@ -60,6 +67,7 @@ export function createRelayServer(options = {}) {
   });
 
   server.on("upgrade", (request, socket, head) => { void (async () => {
+    capacity.record('connectionAttempts');
     const url = requestUrl(request);
     const room = url?.searchParams.get("room");
     const ticketHeader = request.headers["x-granttap-admission"];
@@ -72,6 +80,7 @@ export function createRelayServer(options = {}) {
       recipientKeyId, room, roomSize: sockets.get(room)?.size ?? 0, maxRoomSockets: MAX_ROOM_SOCKETS,
       coolDowns: policy.coolDowns });
     if (refusal) {
+      capacity.record('connectionsRefused');if(refusal.status===429)capacity.record('limited429');
       log("relay.upgrade_refused", { room, status: refusal.status, reason: refusal.reason, retryAfter: refusal.retryAfter });
       const category = ticket ? clientIdentity(ticket, request, env).category : 'anonymous';
       refuseUpgrade(socket, { ...refusal, category, limitReason: refusal.reason === 'cool-down' ? 'relay-cooldown' : refusal.reason === 'room-full' ? 'relay-room-capacity' : undefined });
@@ -79,6 +88,7 @@ export function createRelayServer(options = {}) {
     }
     const decision = clientAccess ? await clientAccess.admit(clientIdentity(ticket, request, env), 'connect') : null;
     if (decision && !decision.allowed) {
+      capacity.record('connectionsRefused');capacity.record('limited429');
       refuseUpgrade(socket, { status: 429, reason: decision.reason, retryAfter: decision.retryAfter || 5, category: decision.category });
       return;
     }
@@ -97,6 +107,7 @@ export function createRelayServer(options = {}) {
     }
     const relayControl = request.headers["x-granttap-recipient-routing"] === "1";
     wss.handleUpgrade(request, socket, head, (ws) => {
+      capacity.connected(ticket);ws.once('close', () => capacity.record('connectionsClosed'));
       ws.relayState = { room, role: null, identity: managedCooldownIdentity(ticket), commercial: !!admission, ticket, policy, relayControl,
         windowStartedAt: Date.now(), windowMessages: 0, recipientKeyId, awaitingPong: false,
         taskDispatch: request.headers["x-granttap-task-dispatch"] === "1" };
@@ -134,7 +145,7 @@ export function createRelayServer(options = {}) {
   dispatchTimer.unref();
   const cleanup = setInterval(() => store.purgeExpiredPairings(), 60_000);
   cleanup.unref();
-  server.on("close", () => { clearInterval(cleanup); clearInterval(dispatchTimer); stopHeartbeat(); clientAccess?.close?.(); wss.close(); store.close(); });
+  server.on("close", () => { clearInterval(cleanup); clearInterval(dispatchTimer); capacity.close(); stopHeartbeat(); clientAccess?.close?.(); wss.close(); store.close(); });
   server.shutdown = async () => {
     // Let healthy clients receive a restart close, then release their private
     // quota leases before the new instance accepts reconnects.

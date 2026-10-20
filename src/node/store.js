@@ -12,6 +12,7 @@ const PUSH_TOKEN_LIMIT = 8;
 
 export class RelayStore {
   constructor(path) {
+    this.path = path;
     mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
@@ -75,6 +76,7 @@ export class RelayStore {
 
   /** Returns a `QUEUE_RESULT`; only `oversize` means the frame itself can never be retained. */
   enqueue(room, role, raw, deliveryId, expiresAt) {
+    const started = performance.now();
     const rawBytes = Buffer.byteLength(raw);
     if (rawBytes > MAX_QUEUE_BYTES) return QUEUE_RESULT.OVERSIZE;
     if (expiresAt != null && expiresAt <= Date.now()) return QUEUE_RESULT.EXPIRED;
@@ -82,14 +84,20 @@ export class RelayStore {
     const queue = this.queue(room, role);
     if (queue.some((item) => item.deliveryId === deliveryId)) return QUEUE_RESULT.DUPLICATE;
     const retained = retainSubmission(queue, { raw, rawBytes, deliveryId,
-      expiresAt: expiresAt ?? Date.now() + DEFAULT_QUEUE_TTL_MS }, HOLD_LIMIT, MAX_QUEUE_BYTES);
+      queuedAt: Date.now(), expiresAt: expiresAt ?? Date.now() + DEFAULT_QUEUE_TTL_MS }, HOLD_LIMIT, MAX_QUEUE_BYTES);
     if (retained.result === QUEUE_RESULT.FULL) return QUEUE_RESULT.FULL;
     this.writeQueue(room, role, retained.rows);
+    this.metrics?.record('receipts'); this.metrics?.timing('receipt', performance.now() - started);
     return retained.result;
   }
 
   acknowledge(room, role, deliveryId) {
     const queue = this.queue(room, role);
+    const acknowledged = queue.find(item => item.deliveryId === deliveryId);
+    if (acknowledged) {
+      this.metrics?.record('acknowledgements');
+      if (Number.isFinite(acknowledged.queuedAt)) this.metrics?.timing('ack', Date.now() - acknowledged.queuedAt);
+    }
     const remaining = queue.filter((item) => item.deliveryId !== deliveryId);
     if (remaining.length !== queue.length) this.writeQueue(room, role, remaining);
   }

@@ -63,14 +63,19 @@ test("a reliable message that expires or loses its room while queueing is droppe
 });
 
 test("heartbeat terminates dead peers so they release room slots", { timeout: 10_000 }, async (t) => {
+  // Build-time CPU contention must not expire peers while the test fills the room.
+  t.mock.timers.enable({ apis: ["setInterval"] });
   const relay = await startRelay(t, { heartbeatIntervalMs: 100 });
   const dead = [];
   for (let index = 0; index < 32; index += 1) dead.push(await relay.connect({ autoPong: false }));
   const full = await relay.refusal();
   assert.equal(full.status, 503);
-  await Promise.all(dead.map((socket) => once(socket, "close")));
+  const closedPeers = Promise.all(dead.map((socket) => once(socket, "close")));
+  t.mock.timers.tick(200);
+  await closedPeers;
   const healthy = await relay.connect();
-  await settle(350);
+  t.mock.timers.tick(100); await settle(25);
+  t.mock.timers.tick(100); await settle(25);
   assert.equal(healthy.readyState, WebSocket.OPEN, "a peer that answers pings stays connected");
   const terminated = relay.lines.filter((line) => line.event === "relay.socket_terminated");
   assert.equal(terminated.length, 32);

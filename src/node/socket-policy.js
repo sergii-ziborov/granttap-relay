@@ -14,6 +14,7 @@ export function identityOf(state, envelope) {
 
 export function closeForPolicy(ws, token, envelope) {
   const state = ws.relayState;
+  if(ws.readyState===1)state.capacityPolicyClose=true;
   return applyPolicyClose({ token, room: state.room, role: state.role ?? envelope?.from,
     identity: identityOf(state, envelope), coolDowns: state.policy?.coolDowns, log: state.policy?.log,
     close: (code, reason) => ws.close(code, reason) });

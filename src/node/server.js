@@ -107,7 +107,7 @@ export function createRelayServer(options = {}) {
     }
     const relayControl = request.headers["x-granttap-recipient-routing"] === "1";
     wss.handleUpgrade(request, socket, head, (ws) => {
-      capacity.connected(ticket);ws.once('close', () => capacity.record('connectionsClosed'));
+      const capacityClosed=capacity.connected(ticket);ws.once('close', () => { capacity.record('connectionsClosed');if(ws.relayState?.capacityPolicyClose)capacity.record('policyCloses');capacityClosed?.(); });
       ws.relayState = { room, role: null, identity: managedCooldownIdentity(ticket), commercial: !!admission, ticket, policy, relayControl,
         windowStartedAt: Date.now(), windowMessages: 0, recipientKeyId, awaitingPong: false,
         taskDispatch: request.headers["x-granttap-task-dispatch"] === "1" };

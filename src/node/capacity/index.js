@@ -39,11 +39,13 @@ export function createRelayCapacity({store,sockets,delivery,env=process.env,now=
   connected(ticket){
    measurements.record('connectionsAccepted');if(!ticket||!reporter)return;
    const subject=reporter.identity('connection',`${ticket.accountId}:${ticket.computerId}:${ticket.role??'machine'}:${ticket.publicKey}`);
-   const at=now();if(recent.has(subject)&&at-recent.get(subject)<600000)measurements.record('reconnects');
-   recent.delete(subject);recent.set(subject,at);if(recent.size>4096)recent.delete(recent.keys().next().value);
+   const at=now(),previous=recent.get(subject);
+   if(previous?.active===0&&at-previous.closedAt<600000)measurements.record('reconnects');
+   recent.delete(subject);recent.set(subject,{active:(previous?.active??0)+1,closedAt:previous?.closedAt??0});
+   if(recent.size>4096)recent.delete(recent.keys().next().value);
+   return()=>{const row=recent.get(subject);if(row){row.active=Math.max(0,row.active-1);if(row.active===0)row.closedAt=now();}};
   },
   log(event){
-   if(event==='relay.policy_close')measurements.record('policyCloses');
    if(event==='relay.slow_receiver')measurements.record('backpressure');
    if(event==='relay.message_dropped')measurements.record('dropped');
   },

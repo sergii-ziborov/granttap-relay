@@ -86,7 +86,10 @@ export function createRelayServer(options = {}) {
       refuseUpgrade(socket, { ...refusal, category, limitReason: refusal.reason === 'cool-down' ? 'relay-cooldown' : refusal.reason === 'room-full' ? 'relay-room-capacity' : undefined });
       return;
     }
-    const decision = clientAccess ? await clientAccess.admit(clientIdentity(ticket, request, env), 'connect') : null;
+    // A valid room credential proves pairing, not a subscription or account.
+    const identity = clientIdentity(ticket, request, env);
+    if (!ticket) identity.identityKind = 'paired-device';
+    const decision = clientAccess ? await clientAccess.admit(identity, 'connect') : null;
     if (decision && !decision.allowed) {
       capacity.record('connectionsRefused');capacity.record('limited429');
       refuseUpgrade(socket, { status: 429, reason: decision.reason, retryAfter: decision.retryAfter || 5, category: decision.category });

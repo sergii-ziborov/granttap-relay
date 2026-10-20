@@ -40,3 +40,14 @@ test('a paid device cooldown survives IP changes without locking another device 
   assert.equal(good.readyState, 1);
   good.terminate();
 });
+
+test('room-authenticated legacy sockets are paired, not verified subscriber accounts', async t => {
+  const seen=[];
+  const relay=await startRelay(t,{managed:true,clientAccess:{async admit(identity,operation){seen.push({identity,operation});return {allowed:true,category:identity.category,reason:'within-budget'};},close(){}}});
+  const socket=await relay.connect();
+  assert.equal(seen[0].operation,'connect');
+  assert.equal(seen[0].identity.category,'anonymous');
+  assert.equal(seen[0].identity.identityKind,'paired-device');
+  assert.equal(seen[0].identity.account,undefined);
+  socket.terminate();
+});

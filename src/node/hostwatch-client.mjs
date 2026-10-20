@@ -87,7 +87,7 @@ export function createClientAccess({ siteId, socketPath, key, timeoutMs = 500, n
         || identified && (typeof identity.account !== 'string' || !identity.account || typeof identity.device !== 'string' || !identity.device || !Number.isSafeInteger(identity.expiresAt) || (operation !== 'release' && (identity.expiresAt <= now() || identity.expiresAt > now() + 360000)))) {
         return { allowed: false, category: 'anonymous', reason: 'invalid-proof', retryAfter: 0, policy };
       }
-      const a = { siteId, operation, category, clientIp: identity.clientIp,
+      const a = { siteId, operation, category, clientIp: identity.clientIp, identityKind: identity.identityKind,
         ...(identified ? { account: tag('account', identity.account), device: tag('device', identity.device), expiresAt: identity.expiresAt } : { expiresAt: now() + 30000 }),
         ...(leaseId ? { leaseId } : {}) };
       try {

@@ -87,7 +87,8 @@ export function createClientAccess({ siteId, socketPath, key, timeoutMs = 500, n
         || identified && (typeof identity.account !== 'string' || !identity.account || typeof identity.device !== 'string' || !identity.device || !Number.isSafeInteger(identity.expiresAt) || (operation !== 'release' && (identity.expiresAt <= now() || identity.expiresAt > now() + 360000)))) {
         return { allowed: false, category: 'anonymous', reason: 'invalid-proof', retryAfter: 0, policy };
       }
-      const a = { siteId, operation, category, clientIp: identity.clientIp, identityKind: identity.identityKind,
+      const established = leaseId && ['renew', 'release'].includes(operation) ? localLeases.get(leaseId) : undefined;
+      const a = { siteId, operation, category, clientIp: established?.clientIp ?? identity.clientIp, identityKind: established?.identityKind ?? identity.identityKind,
         ...(identified ? { account: tag('account', identity.account), device: tag('device', identity.device), expiresAt: identity.expiresAt } : { expiresAt: now() + 30000 }),
         ...(leaseId ? { leaseId } : {}) };
       try {
@@ -95,6 +96,7 @@ export function createClientAccess({ siteId, socketPath, key, timeoutMs = 500, n
         try { d = await remote(a); } catch (e) { if (operation !== 'renew' || !e.leaseMissing) throw e; d = await remote({ ...a, operation: 'connect', leaseId: undefined }); }
         policy = d.policy;
         if (d.allowed && d.leaseId) localLeases.set(d.leaseId, { ...a, expiresAt: a.expiresAt ?? now() + 30000 });
+        if (operation === 'renew' && d.allowed && d.leaseId && d.leaseId !== leaseId) localLeases.delete(leaseId);
         if (operation === 'release') localLeases.delete(leaseId);
         return d;
       } catch (e) {

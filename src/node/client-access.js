@@ -21,13 +21,18 @@ export function trackClientConnection(ws, access, request, env, initial) {
   if (!access || !initial?.leaseId) return;
   // Do not retain the IncomingMessage or its room credential/ticket headers.
   const caller = { socket: { remoteAddress: request.socket.remoteAddress }, headers: { 'x-real-ip': request.headers['x-real-ip'] } };
+  const connectionIdentity = () => {
+    const identity = clientIdentity(ws.relayState.ticket, caller, env);
+    if (!ws.relayState.ticket) identity.identityKind = 'paired-device';
+    return identity;
+  };
   let leaseId = initial.leaseId;
   let running = false;
   const refresh = setInterval(async () => {
     if (running || ws.readyState !== 1) return;
     running = true;
     try {
-      const d = await access.admit(clientIdentity(ws.relayState.ticket, caller, env), 'renew', leaseId);
+      const d = await access.admit(connectionIdentity(), 'renew', leaseId);
       if (d.allowed && d.leaseId) leaseId = d.leaseId;
       // Expiry/authentication are also enforced by the relay's independent
       // managed-admission timer; quota service outages never disable it.
@@ -37,6 +42,6 @@ export function trackClientConnection(ws, access, request, env, initial) {
   refresh.unref();
   ws.once('close', () => {
     clearInterval(refresh);
-    void access.admit(clientIdentity(ws.relayState.ticket, caller, env), 'release', leaseId);
+    void access.admit(connectionIdentity(), 'release', leaseId);
   });
 }

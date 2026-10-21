@@ -58,3 +58,14 @@ test('live socket renews its quota lease and releases the latest lease on closur
   t.mock.timers.tick(60_000);
   assert.equal(calls.length, count, 'closed sockets stop renewing');
 });
+
+test('legacy paired sockets retain pairing evidence when renewing and closing', async t => {
+  t.mock.timers.enable({apis:['setInterval']});const calls=[];
+  const access={async admit(identity,operation){calls.push({identity,operation});return {allowed:true,category:identity.category,leaseId:'paired-lease'};},close(){}};
+  const relay=await startRelay(t,{managed:true,clientAccess:access});const socket=await relay.connect();
+  t.mock.timers.tick(15000);await waitUntil(()=>calls.some(x=>x.operation==='renew'));
+  assert.equal(calls.find(x=>x.operation==='renew').identity.identityKind,'paired-device');
+  assert.equal(calls.find(x=>x.operation==='renew').identity.category,'anonymous');
+  socket.terminate();await waitUntil(()=>calls.some(x=>x.operation==='release'));
+  assert.equal(calls.find(x=>x.operation==='release').identity.identityKind,'paired-device');
+});

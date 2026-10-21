@@ -3,7 +3,7 @@
 Public adapters: `NodeRetainedState` and `WorkerRetainedState`. `policy.js`
 validates and bounds replacement snapshots; `socketReplay.js` paces Node replay.
 The sender negotiates `retainedState` in `relay.capabilities` before adding opaque
-`stateKey`, `stateRevision`, and `statePriority` envelope fields. Old clients and
+`stateKey`, `stateGroup`, `stateRevision`, and `statePriority` envelope fields. Old clients and
 relays retain the existing wire behavior.
 
 Only machine-to-phone, recipient-addressed ciphertext can enter this store.
@@ -26,3 +26,5 @@ of current agent activity. Clients preserve original generation times and
 independently authenticate and decrypt every replayed payload.
 
 Tests: `npm test` and `npm run test:coverage` include this module's tests.
+
+Scoped key grants and their encrypted read snapshots share an opaque group and are evicted together. Catalog discovery has independent priority, so historical key grants cannot crowd out the chat list. The Node adapter migrates the earlier unlinked read cache without modifying durable queued work. Worker indexes retain only slot addresses to stay within per-value storage bounds.

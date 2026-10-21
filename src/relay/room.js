@@ -58,7 +58,7 @@ export class GrantTapRoom {
     pair[1].serializeAttachment({ room, ...(recipientKeyId ? { recipientKeyId } : {}),
       ...(relayControl ? { relayControl } : {}), ...(request.headers.get("X-GrantTap-Presence") === "1" ? { presenceEnabled: true } : {}), taskDispatch: request.headers.get("X-GrantTap-Task-Dispatch") === "1" });
     if (relayControl) {
-      pair[1].send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true, retainedState: true }));
+      pair[1].send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true, retainedState: true, retainedStateGroups: true }));
     }
     return new Response(null, { status: 101, webSocket: pair[0] });
   }

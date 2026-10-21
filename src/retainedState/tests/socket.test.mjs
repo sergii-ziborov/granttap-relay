@@ -45,7 +45,7 @@ test('a restarted relay answers a returning phone with no Mac: keys, catalog, Me
   const now = Date.now();
   for (const priority of [3, 1, 0, 2]) {
     machine.socket.send(JSON.stringify(envelope('machine', { to: 'phone', recipientKeyId: phoneKey,
-      stateKey: String(priority).repeat(64), statePriority: priority, stateRevision: now + priority,
+      stateKey: String(priority).repeat(64), stateGroup: String(priority).repeat(64), statePriority: priority, stateRevision: now + priority,
       expiresAt: now + 6 * 86400000 })));
   }
   await delay();

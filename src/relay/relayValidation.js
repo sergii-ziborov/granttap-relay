@@ -19,7 +19,7 @@ export function validIdentifier(value, max) {
   return typeof value === "string" && value.length >= 1 && value.length <= max;
 }
 
-const ENVELOPE_FIELDS = new Set(["v", "room", "from", "to", "senderId", "deliveryId", "wake", "expiresAt", "nonce", "box", "recipientKeyId", "stateKey", "stateRevision", "statePriority"]);
+const ENVELOPE_FIELDS = new Set(["v", "room", "from", "to", "senderId", "deliveryId", "wake", "expiresAt", "nonce", "box", "recipientKeyId", "stateKey", "stateRevision", "statePriority", "stateGroup"]);
 
 export function validEnvelope(envelope, room, now = Date.now(), maximumTtlMs) {
   return envelopeProblem(envelope, room, now, maximumTtlMs) === null;

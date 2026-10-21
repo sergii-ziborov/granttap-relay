@@ -7,14 +7,18 @@ export class NodeRetainedState {
     db.exec(`CREATE TABLE IF NOT EXISTS retained_state (
       room TEXT NOT NULL, recipient TEXT NOT NULL, slot TEXT NOT NULL,
       revision INTEGER NOT NULL, priority INTEGER NOT NULL, expires_at INTEGER NOT NULL,
-      saved_at INTEGER NOT NULL, bytes INTEGER NOT NULL, raw TEXT NOT NULL,
+      saved_at INTEGER NOT NULL, bytes INTEGER NOT NULL, raw TEXT NOT NULL, state_group TEXT,
       PRIMARY KEY(room,recipient,slot));
       CREATE INDEX IF NOT EXISTS retained_state_expiry ON retained_state(expires_at);`);
+    if (!db.prepare('PRAGMA table_info(retained_state)').all().some(row => row.name === 'state_group')) {
+      db.exec('ALTER TABLE retained_state ADD COLUMN state_group TEXT');
+      db.exec('DELETE FROM retained_state WHERE priority != 1');
+    }
   }
 
   metadata(room) {
     return this.db.prepare(`SELECT recipient,slot AS key,revision,priority,
-      expires_at AS expiresAt,saved_at AS savedAt,bytes FROM retained_state WHERE room=?`).all(room);
+      expires_at AS expiresAt,saved_at AS savedAt,bytes,state_group AS groupId FROM retained_state WHERE room=?`).all(room);
   }
 
   put(room, envelope, raw, now = Date.now()) {
@@ -26,9 +30,9 @@ export class NodeRetainedState {
       const remove = this.db.prepare('DELETE FROM retained_state WHERE room=? AND recipient=? AND slot=?');
       for (const old of before) if (!rows.includes(old)) remove.run(room, old.recipient, old.key);
       const put = this.db.prepare(`INSERT OR REPLACE INTO retained_state
-        (room,recipient,slot,revision,priority,expires_at,saved_at,bytes,raw) VALUES(?,?,?,?,?,?,?,?,?)`);
+        (room,recipient,slot,revision,priority,expires_at,saved_at,bytes,raw,state_group) VALUES(?,?,?,?,?,?,?,?,?,?)`);
       for (const row of rows) if (!before.includes(row)) {
-        put.run(room,row.recipient,row.key,row.revision,row.priority,row.expiresAt,row.savedAt,row.bytes,row.raw);
+        put.run(room,row.recipient,row.key,row.revision,row.priority,row.expiresAt,row.savedAt,row.bytes,row.raw,row.groupId ?? null);
       }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }

@@ -17,7 +17,7 @@ export class WorkerRetainedState {
         const { raw: _, ...metadata } = row;
         await this.storage.put(this.key(row), { ...metadata, chunks });
       }
-      await this.storage.put('state:index', rows.map(({ raw: _, ...row }) => row));
+      await this.storage.put('state:index', rows.map(({ recipient, key }) => ({ recipient, key })));
     });
     this.pending = work.catch(() => {});
     return work;
@@ -37,7 +37,7 @@ export class WorkerRetainedState {
       if (!metadata) continue;
       const chunks = [];
       for (let i = 0; i < metadata.chunks; i++) chunks.push(await this.storage.get(this.key(row, i)));
-      if (chunks.every(chunk => typeof chunk === 'string')) rows.push({ ...row, raw: chunks.join('') });
+      if (chunks.every(chunk => typeof chunk === 'string')) rows.push({ ...metadata, raw: chunks.join('') });
     }
     return rows;
   }

@@ -126,7 +126,7 @@ export function createRelayServer(options = {}) {
       sockets.set(room, roomSockets);
       wss.emit("connection", ws);
       if (relayControl) {
-        ws.send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true, retainedState: true }));
+        ws.send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true, retainedState: true, retainedStateGroups: true }));
       }
     });
   })().catch(() => socket.destroy()); });

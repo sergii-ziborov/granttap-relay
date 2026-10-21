@@ -5,7 +5,7 @@ import { GrantTapRoom } from '../../relay/room.js';
 const recipient = 'b'.repeat(64), roomId = 'a'.repeat(32), now = Date.now();
 const frame = (revision, key = 'c'.repeat(64), bytes = 24) => ({ v: 1, room: roomId, from: 'machine', to: 'phone',
   recipientKeyId: recipient, senderId: 'fixture', nonce: 'A'.repeat(32), box: 'B'.repeat(bytes),
-  stateKey: key, stateRevision: revision, statePriority: 1, expiresAt: now + 10000 });
+  stateKey: key, stateGroup: key, stateRevision: revision, statePriority: 1, expiresAt: now + 10000 });
 function storage() {
   const values = new Map();
   return { values, get: async key => values.get(key), put: async (key, value) => {

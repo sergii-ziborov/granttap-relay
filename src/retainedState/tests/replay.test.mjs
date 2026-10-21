@@ -50,3 +50,17 @@ test('read cache pressure keeps decryption grants and catalogs ahead of large ch
   assert.ok(rows.some(row => row.key === grant.stateKey), 'A cached chat must not evict its decryption grant');
   assert.ok(rows.reduce((sum, row) => sum + row.bytes, 0) <= STATE_ROOM_BYTES);
 });
+
+test('dormant controller copies cannot crowd out recent readers under cache pressure', async () => {
+  const { retainState } = await import('../policy.js');
+  const now = Date.now(), other = 'f'.repeat(64);
+  const activity = [{ role: 'phone', id: recipient, lastSeenAt: now }];
+  const activeHead = frame(now, { statePriority: 3, box: 'D'.repeat(1000000) });
+  let rows = retainState([], activeHead, JSON.stringify(activeHead), now, activity);
+  for (let i = 0; i < 20; i++) {
+    const dormant = frame(now + i + 1, { recipientKeyId: other, statePriority: 2,
+      stateKey: i.toString(16).padStart(64, '0'), box: 'D'.repeat(1000000) });
+    rows = retainState(rows, dormant, JSON.stringify(dormant), now + i + 1, activity);
+  }
+  assert.ok(rows.some(row => row.recipient === recipient), 'Previously used phones keep their readable head');
+});

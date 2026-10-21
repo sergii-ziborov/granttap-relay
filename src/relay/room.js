@@ -30,7 +30,7 @@ export class GrantTapRoom {
     this.env = env;
     initializeRoomTaskDispatch(this);
     initializeRoomSocketPolicy(this);
-    this.retainedState = new WorkerRetainedState(state.storage);
+    this.retainedState = new WorkerRetainedState(state.storage, () => state.storage.get("presence"));
   }
 
   async fetch(request) {

@@ -1,8 +1,9 @@
 import { retainState } from './policy.js';
 
 export class NodeRetainedState {
-  constructor(db) {
+  constructor(db, activity = () => []) {
     this.db = db;
+    this.activity = activity;
     db.exec(`CREATE TABLE IF NOT EXISTS retained_state (
       room TEXT NOT NULL, recipient TEXT NOT NULL, slot TEXT NOT NULL,
       revision INTEGER NOT NULL, priority INTEGER NOT NULL, expires_at INTEGER NOT NULL,
@@ -19,7 +20,7 @@ export class NodeRetainedState {
   put(room, envelope, raw, now = Date.now()) {
     // Capacity/replacement needs small metadata, never a parse of every stored chat.
     const before = this.metadata(room);
-    const rows = retainState(before, envelope, raw, now);
+    const rows = retainState(before, envelope, raw, now, this.activity(room));
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const remove = this.db.prepare('DELETE FROM retained_state WHERE room=? AND recipient=? AND slot=?');

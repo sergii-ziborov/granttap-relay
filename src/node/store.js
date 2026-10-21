@@ -50,8 +50,8 @@ export class RelayStore {
       write: this.db.prepare(`UPDATE rooms SET ${role}_queue = ?, updated_at = ? WHERE room = ?`),
     }]));
     this.taskDispatch = new NodeTaskDispatchStore(this.db);
-    this.retainedState = new NodeRetainedState(this.db);
     this.presence = new NodeRoomPresence(this.db);
+    this.retainedState = new NodeRetainedState(this.db, room => this.presence.rows(room));
   }
 
   room(room) {

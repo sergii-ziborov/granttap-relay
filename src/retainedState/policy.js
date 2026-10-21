@@ -15,7 +15,7 @@ export function validRetainedState(envelope, now) {
     && Number.isSafeInteger(envelope.expiresAt) && envelope.expiresAt <= now + STATE_TTL_MS;
 }
 
-export function retainState(rows, envelope, raw, now = Date.now()) {
+export function retainState(rows, envelope, raw, now = Date.now(), activity = []) {
   const live = rows.filter(row => row.expiresAt > now);
   if (!envelope.stateKey || !validRetainedState(envelope, now) || envelope.expiresAt <= now) return live;
   const bytes = new TextEncoder().encode(raw).length;
@@ -26,7 +26,14 @@ export function retainState(rows, envelope, raw, now = Date.now()) {
   result.push({ recipient: envelope.recipientKeyId, key: envelope.stateKey, revision: envelope.stateRevision,
     priority: envelope.statePriority, expiresAt: envelope.expiresAt, savedAt: now, bytes, raw });
   let total = result.reduce((sum, row) => sum + row.bytes, 0);
-  result.sort((a, b) => b.priority - a.priority || a.savedAt - b.savedAt);
+  const seen = new Map(activity.filter(row => row.role === 'phone' && row.lastSeenAt > now - STATE_TTL_MS)
+    .map(row => [row.id, row.lastSeenAt]));
+  result.sort((a, b) => {
+    const essential = Number(a.priority <= 1) - Number(b.priority <= 1);
+    if (essential) return essential;
+    const recency = a.priority > 1 ? (seen.get(a.recipient) ?? 0) - (seen.get(b.recipient) ?? 0) : 0;
+    return recency || b.priority - a.priority || a.savedAt - b.savedAt;
+  });
   while (result.length > STATE_ROOM_SLOTS || total > STATE_ROOM_BYTES) total -= result.shift().bytes;
   return result;
 }

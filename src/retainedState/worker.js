@@ -2,12 +2,14 @@ import { retainState, replayState } from './policy.js';
 
 /** A room's Durable Object serializes replacement writes and splits large ciphertext. */
 export class WorkerRetainedState {
-  constructor(storage) { this.storage = storage; this.pending = Promise.resolve(); }
+  constructor(storage, activity = async () => []) {
+    this.storage = storage; this.activity = activity; this.pending = Promise.resolve();
+  }
 
   put(envelope, raw, now = Date.now()) {
     const work = this.pending.then(async () => {
       const before = await this.rows();
-      const rows = retainState(before, envelope, raw, now);
+      const rows = retainState(before, envelope, raw, now, await this.activity() ?? []);
       for (const row of before) if (!rows.includes(row)) await this.remove(row);
       for (const row of rows) if (!before.includes(row)) {
         const chunks = Math.ceil(row.raw.length / 60000);

@@ -19,3 +19,7 @@ export function sendJson(response, status, body) {
   response.end(payload);
 }
 
+
+export function requestUrl(request) {
+  try { return new URL(request.url, "http://relay.invalid"); } catch { return null; }
+}

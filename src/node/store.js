@@ -1,3 +1,5 @@
+import { NodeRoomPresence } from "../roomPresence/index.js";
+import { NodeRetainedState } from "../retainedState/node.js";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -48,6 +50,8 @@ export class RelayStore {
       write: this.db.prepare(`UPDATE rooms SET ${role}_queue = ?, updated_at = ? WHERE room = ?`),
     }]));
     this.taskDispatch = new NodeTaskDispatchStore(this.db);
+    this.retainedState = new NodeRetainedState(this.db);
+    this.presence = new NodeRoomPresence(this.db);
   }
 
   room(room) {
@@ -158,6 +162,7 @@ export class RelayStore {
 
   purgeExpiredPairings() {
     this.taskDispatch.purge();
+    this.retainedState.purge();
     this.db.prepare("DELETE FROM pairings WHERE expires_at <= ?").run(Date.now());
     this.db.prepare("DELETE FROM endpoint_directory WHERE expires_at <= ?").run(Date.now());
   }

@@ -1,4 +1,5 @@
-import { readJson, sendJson } from "./http-payloads.js";
+import { closeNodeSocket } from "../roomPresence/index.js";
+import { readJson, sendJson, requestUrl } from "./http-payloads.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -113,6 +114,7 @@ export function createRelayServer(options = {}) {
       const capacityClosed=capacity.connected(ticket);ws.once('close', () => { capacity.record('connectionsClosed');if(ws.relayState?.capacityPolicyClose)capacity.record('policyCloses');capacityClosed?.(); });
       ws.relayState = { room, role: null, identity: managedCooldownIdentity(ticket), commercial: !!admission, ticket, policy, relayControl,
         windowStartedAt: Date.now(), windowMessages: 0, recipientKeyId, awaitingPong: false,
+        presenceEnabled: request.headers["x-granttap-presence"] === "1",
         taskDispatch: request.headers["x-granttap-task-dispatch"] === "1" };
       if (ticket) {
         armManagedExpiry(ws, ticket);
@@ -124,7 +126,7 @@ export function createRelayServer(options = {}) {
       sockets.set(room, roomSockets);
       wss.emit("connection", ws);
       if (relayControl) {
-        ws.send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true }));
+        ws.send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true, retainedState: true }));
       }
     });
   })().catch(() => socket.destroy()); });
@@ -138,8 +140,8 @@ export function createRelayServer(options = {}) {
       if (binary) return;
       handleSocketMessage(ws, value.toString(), { store, sockets, admission, wake, delivery });
     });
-    ws.on("close", () => removeSocket(ws, sockets));
-    ws.on("error", () => removeSocket(ws, sockets));
+    ws.on("close", () => closeNodeSocket(ws, sockets, store, delivery));
+    ws.on("error", () => closeNodeSocket(ws, sockets, store, delivery));
   });
 
   const stopHeartbeat = startHeartbeat(sockets, { log,
@@ -279,21 +281,12 @@ function equalDigest(supplied, expected) {
 }
 
 
-function requestUrl(request) {
-  try { return new URL(request.url, "http://relay.invalid"); } catch { return null; }
-}
 
 function bearer(request) {
   const value = String(request.headers.authorization ?? "");
   return value.startsWith("Bearer ") ? value.slice(7).trim() : "";
 }
 
-function removeSocket(ws, sockets) {
-  const roomSockets = sockets.get(ws.relayState?.room);
-  if (!roomSockets) return;
-  roomSockets.delete(ws);
-  if (!roomSockets.size) sockets.delete(ws.relayState.room);
-}
 
 const isEntryPoint = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isEntryPoint) {

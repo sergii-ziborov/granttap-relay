@@ -1,3 +1,4 @@
+import { STATE_TTL_MS, validRetainedState } from "../retainedState/policy.js";
 export const MAX_ENVELOPE_TTL_MS = 25 * 60 * 60 * 1000;
 const MAX_SUBMISSION_TTL_MS = 31 * 24 * 60 * 60 * 1000;
 
@@ -18,7 +19,7 @@ export function validIdentifier(value, max) {
   return typeof value === "string" && value.length >= 1 && value.length <= max;
 }
 
-const ENVELOPE_FIELDS = new Set(["v", "room", "from", "to", "senderId", "deliveryId", "wake", "expiresAt", "nonce", "box", "recipientKeyId"]);
+const ENVELOPE_FIELDS = new Set(["v", "room", "from", "to", "senderId", "deliveryId", "wake", "expiresAt", "nonce", "box", "recipientKeyId", "stateKey", "stateRevision", "statePriority"]);
 
 export function validEnvelope(envelope, room, now = Date.now(), maximumTtlMs) {
   return envelopeProblem(envelope, room, now, maximumTtlMs) === null;
@@ -40,7 +41,8 @@ export function envelopeProblem(envelope, room, now = Date.now(), maximumTtlMs) 
   const extended = envelope.from === 'phone' && envelope.to === 'machine'
     && typeof envelope.deliveryId === 'string' && ['user-message-', 'attachment-']
       .some(prefix => envelope.deliveryId.startsWith(prefix) && envelope.deliveryId.length > prefix.length);
-  const ttlLimit = maximumTtlMs ?? (extended ? MAX_SUBMISSION_TTL_MS : MAX_ENVELOPE_TTL_MS);
+  if (!validRetainedState(envelope, now)) return "invalid";
+  const ttlLimit = maximumTtlMs ?? (envelope.stateKey ? STATE_TTL_MS : extended ? MAX_SUBMISSION_TTL_MS : MAX_ENVELOPE_TTL_MS);
   if (envelope.expiresAt != null && (!Number.isSafeInteger(envelope.expiresAt)
       || envelope.expiresAt > now + ttlLimit)) return "invalid";
   if (typeof envelope.nonce !== "string" || !/^[A-Za-z0-9+/]{32}$/.test(envelope.nonce)) return "invalid";

@@ -1,3 +1,5 @@
+import { noteWorkerPresence } from "../roomPresence/worker.js";
+import { WorkerRetainedState } from "../retainedState/worker.js";
 import { initializeRoomTaskDispatch, handleRoomTaskDispatch, offerRoomTaskJobs,
   scheduleRoomTaskAlarm } from "../taskDispatch/worker-room.js";
 import { apnsConfigured, sendAPNs } from "./apnsWake.js";
@@ -28,6 +30,7 @@ export class GrantTapRoom {
     this.env = env;
     initializeRoomTaskDispatch(this);
     initializeRoomSocketPolicy(this);
+    this.retainedState = new WorkerRetainedState(state.storage);
   }
 
   async fetch(request) {
@@ -53,9 +56,9 @@ export class GrantTapRoom {
     const pair = new WebSocketPair();
     this.state.acceptWebSocket(pair[1]);
     pair[1].serializeAttachment({ room, ...(recipientKeyId ? { recipientKeyId } : {}),
-      ...(relayControl ? { relayControl } : {}), taskDispatch: request.headers.get("X-GrantTap-Task-Dispatch") === "1" });
+      ...(relayControl ? { relayControl } : {}), ...(request.headers.get("X-GrantTap-Presence") === "1" ? { presenceEnabled: true } : {}), taskDispatch: request.headers.get("X-GrantTap-Task-Dispatch") === "1" });
     if (relayControl) {
-      pair[1].send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true }));
+      pair[1].send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true, retainedState: true }));
     }
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
@@ -78,12 +81,17 @@ export class GrantTapRoom {
       if (refuseCoolingRoomSocket(this, ws, known, envelope)) return;
       ws.serializeAttachment({ ...known, role: envelope.from });
       registerRoomSocketIdentity(this, ws, known, envelope);
+      await noteWorkerPresence(this, ws);
+      if (envelope.from === "phone") {
+        for (const item of await this.retainedState.list(known.recipientKeyId)) ws.send(item.raw);
+      }
       await this.flushTo(envelope.from, ws);
       if (envelope.from === "machine" && known.taskDispatch) {
         await offerRoomTaskJobs(this);
         await scheduleRoomTaskAlarm(this);
       }
     } else if (known.role !== envelope.from) return;
+    if (envelope.stateKey) await this.retainedState.put(envelope, raw);
     const targets = this.targetsFor(ws, envelope);
     if (envelope.to !== "all" && envelope.deliveryId) {
       let stored;
@@ -249,6 +257,6 @@ export class GrantTapRoom {
   async alarm() { await offerRoomTaskJobs(this); await scheduleRoomTaskAlarm(this); }
 
   tokensEqual(left, right) { return constantTimeEqual(left, right); }
-  webSocketClose() {}
-  webSocketError() {}
+  async webSocketClose(ws) { await noteWorkerPresence(this, ws, true); }
+  async webSocketError(ws) { await noteWorkerPresence(this, ws, true); }
 }

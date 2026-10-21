@@ -7,8 +7,9 @@ export function createSocketDelivery({ log, maxBufferedBytes = 4 * 1024 ** 2,
   const flights = new WeakMap();
   return {
     get pendingBytes() { return pendingBytes; },
-    send(socket, raw) {
-      if (socket.readyState !== WebSocket.OPEN) return false;
+    sendAndWait(socket, raw) { return new Promise(resolve => this.send(socket, raw, resolve)); },
+    send(socket, raw, completed) {
+      if (socket.readyState !== WebSocket.OPEN) { completed?.(false); return false; }
       const bytes = Buffer.byteLength(raw);
       // One legal large frame can pass an empty socket, but no second one can pile behind it.
       const buffered = socket.bufferedAmount ?? 0;
@@ -17,6 +18,7 @@ export function createSocketDelivery({ log, maxBufferedBytes = 4 * 1024 ** 2,
         const state = socket.relayState;
         log?.('relay.slow_receiver', { room: state?.room, role: state?.role, reason: 'backpressure' });
         socket.close(1013, 'backpressure; retry-after=5');
+        completed?.(false);
         return false;
       }
       pendingBytes += bytes;
@@ -26,13 +28,19 @@ export function createSocketDelivery({ log, maxBufferedBytes = 4 * 1024 ** 2,
         socket.once('close', () => { for (const release of releases) release(); });
       }
       let pending = true;
-      const release = () => { if (pending) { pending = false; pendingBytes -= bytes; releases.delete(release); } };
+      const release = error => {
+        if (!pending) return;
+        pending = false;
+        pendingBytes -= bytes;
+        releases.delete(release);
+        completed?.(!error && socket.readyState === WebSocket.OPEN);
+      };
       releases.add(release);
       try {
         socket.send(raw, release);
         return true;
-      } catch {
-        release();
+      } catch (error) {
+        release(error);
         socket.terminate();
         return false;
       }

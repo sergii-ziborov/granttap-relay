@@ -1,3 +1,5 @@
+import { replayNodeFrames } from "../retainedState/socketReplay.js";
+import { publishNodePresence } from "../roomPresence/index.js";
 import { WebSocket } from "ws";
 import { acceptSocketFrame, admissionCloseToken, droppedNotice, queueOutcome } from "../relay/connectionPolicy.js";
 import { socketIdentity } from "../relay/coolDown.js";
@@ -33,8 +35,20 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake, 
     return closeForPolicy(ws, admissionCloseToken(envelope), envelope);
   }
   store.metrics?.record('received');
-  if (!state.role) registerRole(ws, envelope, store, delivery);
+  if (!state.role) {
+    registerRole(ws, envelope, store, delivery);
+    store.presence?.note(state.room, state.role, state.recipientKeyId);
+    publishNodePresence(state.room, store, sockets, delivery);
+  }
   else if (state.role !== envelope.from) return;
+  if (!state.presenceAt || Date.now() - state.presenceAt >= 30000) {
+    store.presence?.note(state.room, state.role, state.recipientKeyId);
+    state.presenceAt = Date.now();
+  }
+  if (envelope.stateKey) {
+    try { store.retainedState.put(state.room, envelope, raw); }
+    catch { return dropMessage(ws, envelope, "storage-unavailable"); }
+  }
   if (envelope.to !== "all" && envelope.deliveryId) {
     let stored;
     try { stored = store.enqueue(state.room, envelope.to, raw, envelope.deliveryId, envelope.expiresAt); }
@@ -65,13 +79,11 @@ function registerRole(ws, envelope, store, delivery) {
   state.role = envelope.from;
   state.identity ??= socketIdentity({ room: state.room, recipientKeyId: state.recipientKeyId,
     role: state.role, senderId: envelope.senderId });
-  for (const item of store.queue(state.room, state.role)) {
-    if (ws.readyState !== WebSocket.OPEN) break;
-    if (matchesQueuedRecipient(item.raw, state.recipientKeyId)) {
-      const sent = delivery ? delivery.send(ws, item.raw) : (ws.send(item.raw), true);
-      if (sent) { store.metrics?.record('forwarded'); if (Number.isFinite(item.queuedAt)) store.metrics?.timing('forward', Date.now() - item.queuedAt); }
-    }
-  }
+  const saved = state.role === "phone" ? store.retainedState.list(state.room, state.recipientKeyId) : [];
+  const rows = [...saved, ...store.queue(state.room, state.role)]
+    .filter(item => matchesQueuedRecipient(item.raw, state.recipientKeyId));
+  void replayNodeFrames(ws, rows, delivery, store.metrics);
+
 }
 
 /** Expired or room-less reliable frames are neither stored nor forwarded; the socket stays open. */

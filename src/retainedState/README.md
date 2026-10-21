@@ -13,8 +13,8 @@ catalogs, Mesh snapshots and transcript heads, without requiring a machine to be
 online. Each recipient is selected explicitly; legacy connections without a
 recipient digest cannot read retained state.
 
-Each room holds at most 512 slots and 8 MiB, each frame at most 1.8 MB, with an
-expiry no later than seven days. The oldest snapshots may be evicted at capacity;
+Each room holds at most 512 slots and 16 MiB, each frame at most 1.8 MB, with an
+expiry no later than seven days. At capacity, older chat heads are evicted before Mesh snapshots, catalogs and key grants;
 this read cache promises neither a complete archive nor permanent storage.
 Node purges expired rows each minute; Worker drops expired rows on replacement
 and never replays them. Durable queued commands use the separate task-dispatch

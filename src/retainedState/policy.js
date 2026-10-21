@@ -1,6 +1,6 @@
 /** Replaceable ciphertext is independent of the delivery mailbox and its ACKs. */
 export const STATE_TTL_MS = 7 * 86400000;
-export const STATE_ROOM_BYTES = 8 * 1024 * 1024;
+export const STATE_ROOM_BYTES = 16 * 1024 * 1024;
 export const STATE_ROOM_SLOTS = 512;
 export const STATE_FRAME_BYTES = 1800000;
 
@@ -26,7 +26,7 @@ export function retainState(rows, envelope, raw, now = Date.now()) {
   result.push({ recipient: envelope.recipientKeyId, key: envelope.stateKey, revision: envelope.stateRevision,
     priority: envelope.statePriority, expiresAt: envelope.expiresAt, savedAt: now, bytes, raw });
   let total = result.reduce((sum, row) => sum + row.bytes, 0);
-  result.sort((a, b) => a.savedAt - b.savedAt);
+  result.sort((a, b) => b.priority - a.priority || a.savedAt - b.savedAt);
   while (result.length > STATE_ROOM_SLOTS || total > STATE_ROOM_BYTES) total -= result.shift().bytes;
   return result;
 }

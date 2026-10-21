@@ -36,3 +36,17 @@ test('latest encrypted state survives decrypt ACK and relay restart, scoped by r
     assert.deepEqual(store.retainedState.list(room, undefined), []);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('read cache pressure keeps decryption grants and catalogs ahead of large chat heads', async () => {
+  const { retainState, STATE_ROOM_BYTES } = await import('../policy.js');
+  const now = Date.now();
+  const grant = frame(now, { statePriority: 0 });
+  let rows = retainState([], grant, JSON.stringify(grant), now);
+  for (let i = 0; i < 20; i++) {
+    const head = frame(now + i + 1, { stateKey: i.toString(16).padStart(64, '0'), statePriority: 3,
+      box: 'D'.repeat(1000000) });
+    rows = retainState(rows, head, JSON.stringify(head), now + i + 1);
+  }
+  assert.ok(rows.some(row => row.key === grant.stateKey), 'A cached chat must not evict its decryption grant');
+  assert.ok(rows.reduce((sum, row) => sum + row.bytes, 0) <= STATE_ROOM_BYTES);
+});

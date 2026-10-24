@@ -18,7 +18,7 @@ function apnsEnvironment(env, environment) {
 export function pushPayload() {
   return {
     aps: {
-      alert: { title: "GrantTap", body: "An agent is waiting for an authenticated decision." },
+      alert: { title: "GrantTap", body: "Your Tasks have updates. Open GrantTap to sync." },
       sound: "default",
       "content-available": 1,
       "interruption-level": "time-sensitive",

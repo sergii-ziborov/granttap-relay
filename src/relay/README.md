@@ -5,6 +5,11 @@ envelope delivery, APNs wake delivery, and pairing-mailbox parking.  The relay
 only validates bounded routing metadata and never decrypts payloads. Browser
 approval and vault routes are absent from the Personal worker.
 
+An APNs wake uses neutral update wording. Ciphertext can carry transfer results,
+questions or other Task events, so the relay cannot claim that a live approval
+exists. The Apple client creates an actionable approval notification only after
+authenticating and decoding its request.
+
 `../worker.js` is the Cloudflare entry point and intentionally re-exports the
 public Durable Object classes and validation helpers for deployment bindings.
 

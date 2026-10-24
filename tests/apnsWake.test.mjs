@@ -36,6 +36,15 @@ test("wake payload is alert plus content-available and has no relay task fields"
   assert.doesNotMatch(JSON.stringify(payload), /command|prompt|sessionId|ciphertext/i);
 });
 
+test('an opaque wake cannot claim that an approval or answer is waiting', () => {
+  const payload = pushPayload();
+  assert.doesNotMatch(payload.aps.alert.body, /approval|authenticated decision|waiting|answer/i);
+  assert.match(payload.aps.alert.body, /update|sync/i);
+  assert.equal(payload.aps['content-available'], 1);
+  assert.equal(payload.granttapWake, true);
+  assert.deepEqual(Object.keys(payload).sort(), ['aps', 'granttapWake']);
+});
+
 test("APNs accepts a successful response and caches the provider token", async () => {
   const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   const encoded = Buffer.from(new Uint8Array(await crypto.subtle.exportKey("pkcs8", key.privateKey))).toString("base64");

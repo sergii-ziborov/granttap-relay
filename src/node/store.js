@@ -38,6 +38,9 @@ export class RelayStore {
         room TEXT PRIMARY KEY, nonce TEXT NOT NULL, box TEXT NOT NULL, expires_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS endpoint_expiry ON endpoint_directory(expires_at);
+      CREATE TABLE IF NOT EXISTS relay_wakes (
+        room TEXT PRIMARY KEY, record TEXT NOT NULL
+      );
     `);
     this.ensureRoom = this.db.prepare(`
       INSERT INTO rooms(room, updated_at) VALUES (?, ?)
@@ -113,6 +116,23 @@ export class RelayStore {
 
   pushTokens(room) { return parseArray(this.room(room)?.push_tokens ?? "[]"); }
 
+  wakeState(room) {
+    const row = this.db.prepare('SELECT record FROM relay_wakes WHERE room = ?').get(room);
+    return row ? JSON.parse(row.record) : null;
+  }
+
+  saveWakeState(room, state) {
+    this.db.prepare(`INSERT INTO relay_wakes(room, record) VALUES (?, ?)
+      ON CONFLICT(room) DO UPDATE SET record=excluded.record`).run(room, JSON.stringify(state));
+  }
+
+  dueWakeRooms() {
+    return this.db.prepare(`SELECT room FROM relay_wakes
+      WHERE json_extract(record, '$.pending') IS NOT NULL
+      AND min(json_extract(record, '$.nextAt'),json_extract(record, '$.pending.expiresAt')) <= ?
+      LIMIT 128`).all(Date.now()).map(row => row.room);
+  }
+
   updatePushToken(room, device, remove = false) {
     let tokens = this.pushTokens(room).filter((item) => item.token !== device.token);
     if (!remove) tokens.push({ ...device, updatedAt: Date.now() });
@@ -165,6 +185,9 @@ export class RelayStore {
     this.retainedState.purge();
     this.db.prepare("DELETE FROM pairings WHERE expires_at <= ?").run(Date.now());
     this.db.prepare("DELETE FROM endpoint_directory WHERE expires_at <= ?").run(Date.now());
+    this.db.prepare(`DELETE FROM relay_wakes WHERE json_extract(record, '$.pending') IS NULL
+      AND NOT EXISTS (SELECT 1 FROM json_each(json_extract(record, '$.recent'))
+        WHERE json_extract(value, '$.expiresAt') > ?)`).run(Date.now());
   }
 
   putEndpoint(room, record) {

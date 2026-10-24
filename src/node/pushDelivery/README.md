@@ -19,3 +19,11 @@ runtime environment without modifying `process.env`. Existing secret-backed
 
 New Apple keys belong to one environment. Registration reports whether that
 particular environment is configured; it does not claim notification delivery.
+
+The shared [wake policy](../../relay/README.md#background-wake-delivery) sends only
+silent synchronization hints, persists deduplication/coalescing/retry state in
+the additive `relay_wakes` SQLite table, and never removes a reliable envelope
+on APNs acceptance. Older relay binaries ignore this additional table, so a
+container rollback can reuse the same data file without restoring an older
+database snapshot. Pending wake work resumes on startup; a send failure cannot
+create an unlimited reminder loop.

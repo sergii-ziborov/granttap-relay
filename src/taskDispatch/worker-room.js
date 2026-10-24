@@ -43,7 +43,8 @@ export function scheduleRoomTaskAlarm(room) {
       return attachment?.role === 'machine' && attachment.taskDispatch ? [attachment.recipientKeyId] : [];
     }));
     const taskAlarm = await room.taskDispatch.maintain(Date.now(), recipients);
-    const next = Math.min(endpointAlarm ?? Infinity, taskAlarm ?? Infinity);
+    const wakeAlarm = await room.wakes.nextAt('room');
+    const next = Math.min(endpointAlarm ?? Infinity, taskAlarm ?? Infinity, wakeAlarm ?? Infinity);
     if (Number.isFinite(next)) await room.state.storage.setAlarm(next);
     else await room.state.storage.deleteAlarm();
   };

@@ -17,12 +17,7 @@ function apnsEnvironment(env, environment) {
 
 export function pushPayload() {
   return {
-    aps: {
-      alert: { title: "GrantTap", body: "Your Tasks have updates. Open GrantTap to sync." },
-      sound: "default",
-      "content-available": 1,
-      "interruption-level": "time-sensitive",
-    },
+    aps: { "content-available": 1 },
     granttapWake: true,
   };
 }
@@ -34,12 +29,13 @@ export async function sendAPNs(env, device, request = fetch) {
   const host = device.environment === "sandbox" ? "https://api.sandbox.push.apple.com" : "https://api.push.apple.com";
   const response = await request(`${host}/3/device/${device.token}`, {
     method: "POST",
+    signal: AbortSignal.timeout(8_000),
     headers: {
       authorization: `bearer ${providerToken}`,
       "apns-topic": device.bundleId,
-      "apns-push-type": "alert",
-      "apns-priority": "10",
-      "apns-expiration": String(Math.floor(Date.now() / 1000) + 180),
+      "apns-push-type": "background",
+      "apns-priority": "5",
+      "apns-expiration": "0",
       "apns-collapse-id": "granttap-wake",
       "content-type": "application/json",
     },

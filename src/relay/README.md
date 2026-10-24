@@ -5,10 +5,41 @@ envelope delivery, APNs wake delivery, and pairing-mailbox parking.  The relay
 only validates bounded routing metadata and never decrypts payloads. Browser
 approval and vault routes are absent from the Personal worker.
 
-An APNs wake uses neutral update wording. Ciphertext can carry transfer results,
+An APNs wake is a silent background synchronization hint. Ciphertext can carry transfer results,
 questions or other Task events, so the relay cannot claim that a live approval
 exists. The Apple client creates an actionable approval notification only after
 authenticating and decoding its request.
+
+## Background wake delivery
+
+Opaque `wake=true` envelopes use `content-available: 1`, APNs push type
+`background`, priority `5`, expiration `0`, and the existing collapse ID. They
+contain no alert, sound, badge or Time Sensitive level. Collapse only combines
+pending APNs requests; it is not an application-level delivery receipt. See
+[Apple's background update guidance](https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app).
+
+Both backends retain up to 256 expiring SHA-256 wake receipts per room. The key
+uses sender/recipient/delivery identity; legacy transient frames without an ID
+use their opaque ciphertext identity. ACKs, token re-registration and relay
+restarts do not reset this history. A genuinely new envelope still forwards and
+enters the same reliable/retained storage as before. Wake receipts contain no
+plaintext event, prompt, raw delivery ID or APNs token.
+
+The first new wake is immediate. Further new envelopes within 60 seconds
+coalesce into one persisted trailing wake. Node checks pending work on startup
+and its minute maintenance tick (so the trailing send can take up to another
+minute); a Worker room composes that deadline with its existing task/endpoint
+alarm. No new envelope means no periodic reminder loop. An expired hint is
+discarded; provider failures get at most three total attempts, separated by at
+least 60 seconds. Repeated delivery IDs do not reset that budget. Node logs only
+allowlisted outcome tokens such as `background-accepted` and `duplicate`.
+
+Background pushes are best effort and iOS may throttle them; a coalescing bound
+is not a delivery guarantee. Encrypted data remains independently available
+under its original expiry/ACK rules and is replayed on reconnection. Only an
+authenticated client that decrypts a new event can decide whether it warrants
+a user-visible alert. This change does not add a semantic event discriminator
+to the relay wire protocol.
 
 `../worker.js` is the Cloudflare entry point and intentionally re-exports the
 public Durable Object classes and validation helpers for deployment bindings.

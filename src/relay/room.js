@@ -14,6 +14,7 @@ import { putDirectoryEndpoint } from "./endpointRetention.js";
 
 import { validRecipientKeyId, matchesRecipient, matchesQueuedRecipient } from "./recipientRouting.js";
 import { isDurableSubmission, retainSubmission, storedSubmissionNotice } from "./submissionReceipts.js";
+import { WakeDelivery } from './wakeDelivery.js';
 
 const HOLD_LIMIT = 100;
 const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
@@ -31,6 +32,8 @@ export class GrantTapRoom {
     initializeRoomTaskDispatch(this);
     initializeRoomSocketPolicy(this);
     this.retainedState = new WorkerRetainedState(state.storage, () => state.storage.get("presence"));
+    this.wakes = new WakeDelivery({ read: () => state.storage.get('push:wake'),
+      write: (_room, value) => state.storage.put('push:wake', value), send: () => this.sendWakePush() });
   }
 
   async fetch(request) {
@@ -108,7 +111,10 @@ export class GrantTapRoom {
     for (const target of targets) {
       try { target.send(raw); } catch { /* stale hibernating socket */ }
     }
-    if (envelope.to === "phone" && envelope.wake === true) await this.sendWakePush().catch(() => {});
+    if (envelope.to === "phone" && envelope.wake === true) {
+      await this.wakes.request('room', envelope).catch(() => {});
+      if (await this.wakes.nextAt('room') !== null) await scheduleRoomTaskAlarm(this);
+    }
   }
 
   targetsFor(ws, envelope) {
@@ -215,14 +221,23 @@ export class GrantTapRoom {
   }
 
   async sendWakePush() {
-    if (!apnsConfigured(this.env)) return;
+    if (!apnsConfigured(this.env)) return true;
     const tokens = (await this.state.storage.get(PUSH_TOKENS_KEY)) ?? [];
     const stale = new Set();
-    await Promise.all(tokens.map(async (device) => { if ((await sendAPNs(this.env, device)).stale) stale.add(device.token); }));
-    if (!stale.size) return;
-    const remaining = tokens.filter((device) => !stale.has(device.token));
-    if (remaining.length) await this.state.storage.put(PUSH_TOKENS_KEY, remaining);
-    else await this.state.storage.delete(PUSH_TOKENS_KEY);
+    let ok = true;
+    await Promise.all(tokens.map(async device => {
+      try {
+        const result = await sendAPNs(this.env, device);
+        if (result.stale) stale.add(device.token);
+        else if (!result.ok) ok = false;
+      } catch { ok = false; }
+    }));
+    if (stale.size) {
+      const remaining = tokens.filter(device => !stale.has(device.token));
+      if (remaining.length) await this.state.storage.put(PUSH_TOKENS_KEY, remaining);
+      else await this.state.storage.delete(PUSH_TOKENS_KEY);
+    }
+    return ok;
   }
 
   async requireRoomAuth(request) {
@@ -254,7 +269,7 @@ export class GrantTapRoom {
     return json(result.body, result.status);
   }
 
-  async alarm() { await offerRoomTaskJobs(this); await scheduleRoomTaskAlarm(this); }
+  async alarm() { await this.wakes.drain('room'); await offerRoomTaskJobs(this); await scheduleRoomTaskAlarm(this); }
 
   tokensEqual(left, right) { return constantTimeEqual(left, right); }
   async webSocketClose(ws) { await noteWorkerPresence(this, ws, true); }

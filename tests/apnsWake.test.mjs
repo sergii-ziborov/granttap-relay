@@ -28,18 +28,17 @@ test("APNs configuration and stale-token responses are handled without opaque pa
   }
 });
 
-test("wake payload is alert plus content-available and has no relay task fields", () => {
+test("wake payload is a silent sync hint and has no relay task fields", () => {
   const payload = pushPayload();
   assert.equal(payload.aps["content-available"], 1);
-  assert.equal(payload.aps.alert.title, "GrantTap");
+  assert.equal(payload.aps.alert, undefined);
   assert.equal(payload.granttapWake, true);
   assert.doesNotMatch(JSON.stringify(payload), /command|prompt|sessionId|ciphertext/i);
 });
 
 test('an opaque wake cannot claim that an approval or answer is waiting', () => {
   const payload = pushPayload();
-  assert.doesNotMatch(payload.aps.alert.body, /approval|authenticated decision|waiting|answer/i);
-  assert.match(payload.aps.alert.body, /update|sync/i);
+  assert.doesNotMatch(JSON.stringify(payload), /approval|authenticated decision|waiting|answer|sound|interruption-level/i);
   assert.equal(payload.aps['content-available'], 1);
   assert.equal(payload.granttapWake, true);
   assert.deepEqual(Object.keys(payload).sort(), ['aps', 'granttapWake']);

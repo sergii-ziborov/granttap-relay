@@ -71,7 +71,7 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake, 
       }
     }
   }
-  if (envelope.to === "phone" && envelope.wake === true) wake?.(state.room);
+  if (envelope.to === "phone" && envelope.wake === true) wake?.(state.room, envelope);
 }
 
 function registerRole(ws, envelope, store, delivery) {

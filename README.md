@@ -291,3 +291,7 @@ uses addressed envelopes only after the relay advertises support. This limits
 live and retained ciphertext to its intended controller without changing room
 authorization or encryption. Earlier clients and relays remain compatible.
 The routing digest is not a credential; clients still authenticate every payload.
+
+Policy closure is idempotent for each Node socket: buffered frames from a closing
+connection are ignored and cannot add reconnect cooldown strikes. A later
+connection that violates policy still receives the normal escalating cooldown.

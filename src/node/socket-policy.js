@@ -1,3 +1,4 @@
+import { WebSocket } from "ws";
 import { applyPolicyClose, refuseCoolingFrame } from "../relay/connectionPolicy.js";
 import { socketIdentity } from "../relay/coolDown.js";
 
@@ -13,8 +14,10 @@ export function identityOf(state, envelope) {
 }
 
 export function closeForPolicy(ws, token, envelope) {
+  // Buffered frames may still arrive after the first close starts.
+  if (ws.readyState !== WebSocket.OPEN) return;
   const state = ws.relayState;
-  if(ws.readyState===1)state.capacityPolicyClose=true;
+  state.capacityPolicyClose = true;
   return applyPolicyClose({ token, room: state.room, role: state.role ?? envelope?.from,
     identity: identityOf(state, envelope), coolDowns: state.policy?.coolDowns, log: state.policy?.log,
     close: (code, reason) => ws.close(code, reason) });

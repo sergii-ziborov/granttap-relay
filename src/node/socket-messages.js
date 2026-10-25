@@ -13,6 +13,7 @@ export const MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024;
 
 /** Routes one text frame from an authenticated Node relay socket. */
 export function handleSocketMessage(ws, raw, { store, sockets, admission, wake, delivery }) {
+  if (ws.readyState !== WebSocket.OPEN) return;
   const started = performance.now();
   const state = ws.relayState;
   if (Buffer.byteLength(raw) > MAX_WEBSOCKET_MESSAGE_BYTES) return closeForPolicy(ws, "oversize");

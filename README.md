@@ -293,3 +293,7 @@ authorization or encryption. Earlier clients and relays remain compatible.
 The routing digest is not a credential; clients still authenticate every payload.
 
 Latest encrypted read state is retained separately from command delivery. See [retained state](src/retainedState/README.md), [room presence](src/roomPresence/README.md), and [durable queue](src/taskDispatch/README.md). A returning phone can restore cached catalogs, Mesh and chat heads while its computer is offline.
+
+Policy closure is idempotent for each Node socket: buffered frames from a closing
+connection are ignored and cannot add reconnect cooldown strikes. A later
+connection that violates policy still receives the normal escalating cooldown.

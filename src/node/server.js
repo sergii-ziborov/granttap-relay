@@ -23,6 +23,7 @@ import { createSocketDelivery } from './socketDelivery/index.js';
 import { createRelayCapacity } from './capacity/index.js';
 import { clientAccessFromEnv } from './hostwatch-client.mjs';
 import { clientIdentity, setClientDecision, trackClientConnection } from './client-access.js';
+import { WakeDelivery } from '../relay/wakeDelivery.js';
 
 const MAX_HTTP_BODY_BYTES = 40_000;
 const MAX_PUSH_BODY_BYTES = 4_096;
@@ -131,7 +132,15 @@ export function createRelayServer(options = {}) {
     });
   })().catch(() => socket.destroy()); });
 
-  const wake = (room) => { void sendWakePush(store, room, env); };
+  const wakes = new WakeDelivery({ read: room => store.wakeState(room),
+    write: (room, state) => store.saveWakeState(room, state),
+    send: room => sendWakePush(store, room, env, options.pushRequest ?? nodeAPNsRequest, log),
+    notify: reason => log('relay.wake', { reason }) });
+  const wake = (room, envelope) => { void wakes.request(room, envelope).catch(() => log('relay.wake', { reason: 'storage-unavailable' })); };
+  let wakePump;
+  const pumpWakes = () => wakePump ??= (async () => {
+    for (const room of store.dueWakeRooms()) await wakes.drain(room);
+  })().catch(() => log('relay.wake', { reason: 'storage-unavailable' })).finally(() => { wakePump = null; });
   wss.on("connection", (ws) => {
     ws.on("pong", () => markAlive(ws));
     ws.on("ping", () => markAlive(ws));
@@ -148,7 +157,8 @@ export function createRelayServer(options = {}) {
     intervalMs: options.heartbeatIntervalMs ?? heartbeatIntervalFrom(env.RELAY_HEARTBEAT_MS) });
   const dispatchTimer = setInterval(() => { void offerJobs().catch(() => {}); }, options.taskDispatchIntervalMs ?? 1000);
   dispatchTimer.unref();
-  const cleanup = setInterval(() => store.purgeExpiredPairings(), 60_000);
+  const cleanup = setInterval(() => { store.purgeExpiredPairings(); void pumpWakes(); }, options.cleanupIntervalMs ?? 60_000);
+  server.once('listening', () => { void pumpWakes(); });
   cleanup.unref();
   server.on("close", () => { clearInterval(cleanup); clearInterval(dispatchTimer); capacity.close(); stopHeartbeat(); clientAccess?.close?.(); wss.close(); store.close(); });
   server.shutdown = async () => {
@@ -249,13 +259,20 @@ async function handlePush(request, response, store, env, url) {
     enabled: apnsConfigured(env, body.environment), devices: tokens.length });
 }
 
-async function sendWakePush(store, room, env) {
-  if (!apnsConfigured(env)) return;
+async function sendWakePush(store, room, env, request, log) {
+  if (!apnsConfigured(env)) return true;
   const stale = [];
+  let ok = true;
   await Promise.all(store.pushTokens(room).map(async (device) => {
-    try { if ((await sendAPNs(env, device, nodeAPNsRequest)).stale) stale.push(device.token); } catch { /* retry on next wake */ }
+    try {
+      const result = await sendAPNs(env, device, request);
+      log('relay.apns', { reason: result.ok ? 'background-accepted' : result.stale ? 'stale-token' : 'background-rejected' });
+      if (result.stale) stale.push(device.token);
+      else if (!result.ok) ok = false;
+    } catch { ok = false; log('relay.apns', { reason: 'background-failed' }); }
   }));
   if (stale.length) store.removePushTokens(room, stale);
+  return ok;
 }
 
 function authorize(store, room, credential, pin = true) {

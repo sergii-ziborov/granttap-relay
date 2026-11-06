@@ -18,7 +18,7 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake, 
   const started = performance.now();
   const state = ws.relayState;
   if (Buffer.byteLength(raw) > MAX_WEBSOCKET_MESSAGE_BYTES) return closeForPolicy(ws, "oversize");
-  if (!acceptSocketFrame(state)) return closeForPolicy(ws, "rate-limit");
+  if (!delivery?.acceptAcknowledgement?.(ws, raw) && !acceptSocketFrame(state)) return closeForPolicy(ws, "rate-limit");
   let envelope;
   try { envelope = JSON.parse(raw); } catch { return; }
   if (renewManagedConnection(ws, envelope, admission)) return;
@@ -69,7 +69,7 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake, 
     if (target === ws || target.readyState !== WebSocket.OPEN) continue;
     if (envelope.to === "all" || target.relayState?.role === envelope.to) {
       if (matchesRecipient(envelope, target.relayState?.recipientKeyId)) {
-        const sent = delivery ? delivery.send(target, raw) : (target.send(raw), true);
+        const sent = delivery ? delivery.send(target, raw, undefined, envelope.deliveryId) : (target.send(raw), true);
         if (sent) { store.metrics?.record('forwarded'); store.metrics?.timing('forward', performance.now() - started); }
       }
     }

@@ -10,6 +10,9 @@
   `node/socket-messages.js`, `node/socket-policy.js` and `node/heartbeat.js` own
   upgrade refusal, frame routing, policy closes and liveness. See
   [relay/README.md](relay/README.md#connection-policy).
+- [responseAcknowledgements](responseAcknowledgements/README.md) bounds single-use
+  Node delivery replies separately from commands, including a returning phone's
+  retained-state replay.
 
 Personal production intentionally has no browser workspace, approval-card,
 browser-pairing, or vault modules.

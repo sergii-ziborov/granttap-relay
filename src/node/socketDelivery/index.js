@@ -1,14 +1,17 @@
 import { WebSocket } from 'ws';
+import { createResponseAcknowledgements } from '../../responseAcknowledgements/index.js';
 
 /** Bound ciphertext waiting for slow receivers; reliable rows remain in SQLite. */
 export function createSocketDelivery({ log, maxBufferedBytes = 4 * 1024 ** 2,
   maxPendingBytes = 64 * 1024 ** 2 } = {}) {
   let pendingBytes = 0;
   const flights = new WeakMap();
+  const responses = createResponseAcknowledgements();
   return {
     get pendingBytes() { return pendingBytes; },
-    sendAndWait(socket, raw) { return new Promise(resolve => this.send(socket, raw, resolve)); },
-    send(socket, raw, completed) {
+    acceptAcknowledgement(socket, raw) { return responses.consume(socket, raw); },
+    sendAndWait(socket, raw, deliveryId) { return new Promise(resolve => this.send(socket, raw, resolve, deliveryId)); },
+    send(socket, raw, completed, deliveryId) {
       if (socket.readyState !== WebSocket.OPEN) { completed?.(false); return false; }
       const bytes = Buffer.byteLength(raw);
       // One legal large frame can pass an empty socket, but no second one can pile behind it.
@@ -37,6 +40,7 @@ export function createSocketDelivery({ log, maxBufferedBytes = 4 * 1024 ** 2,
       };
       releases.add(release);
       try {
+        responses.issue(socket, deliveryId);
         socket.send(raw, release);
         return true;
       } catch (error) {

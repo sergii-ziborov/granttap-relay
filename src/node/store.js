@@ -1,3 +1,4 @@
+import { SqliteTaskActivities } from "../taskActivities/index.js";
 import { NodeRoomPresence } from "../roomPresence/index.js";
 import { NodeRetainedState } from "../retainedState/node.js";
 import { mkdirSync } from "node:fs";
@@ -52,6 +53,7 @@ export class RelayStore {
       write: this.db.prepare(`UPDATE rooms SET ${role}_queue = ?, updated_at = ? WHERE room = ?`),
     }]));
     this.taskDispatch = new NodeTaskDispatchStore(this.db);
+    this.taskActivities = new SqliteTaskActivities(this.db);
     this.presence = new NodeRoomPresence(this.db);
     this.retainedState = new NodeRetainedState(this.db, room => this.presence.rows(room));
   }

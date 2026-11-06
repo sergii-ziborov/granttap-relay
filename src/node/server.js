@@ -4,16 +4,15 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
-import { apnsConfigured, sendAPNs } from "../relay/apnsWake.js";
-import { acceptsWebSocketPath, validBase64, validDeviceToken, validRoom, validRoomCredential } from "../relay/relayValidation.js";
+import { apnsConfigured } from "../relay/apnsWake.js";
+import { acceptsWebSocketPath, validBase64, validRoom, validRoomCredential } from "../relay/relayValidation.js";
 import { RelayStore } from "./store.js";
 import { ENDPOINT_BODY_LIMIT, endpointResponse, endpointStorageKey } from "../relay/endpointDirectory.js";
 import { managedAdmission, managedCooldownIdentity } from "./managed-admission.js";
 import { armManagedExpiry } from "./managed-connection.js";
-import { nodeAPNsRequest } from "./pushDelivery/http2.js";
+import { nodeAPNsRequest, configuredPushEnvironment, handlePushRegistration, sendWakePush } from "./pushDelivery/index.js";
 import { nodeTaskDispatchPump } from "../taskDispatch/socket-offers.js";
 import { taskDispatchResponse } from "../taskDispatch/index.js";
-import { configuredPushEnvironment } from "./pushDelivery/configuration.js";
 import { CoolDownRegistry } from "../relay/coolDown.js";
 import { createRelayLog } from "../relay/relayLog.js";
 import { heartbeatIntervalFrom, markAlive, startHeartbeat } from "./heartbeat.js";
@@ -23,10 +22,10 @@ import { createSocketDelivery } from './socketDelivery/index.js';
 import { createRelayCapacity } from './capacity/index.js';
 import { clientAccessFromEnv } from './hostwatch-client.mjs';
 import { clientIdentity, setClientDecision, trackClientConnection } from './client-access.js';
+import { TaskActivityEndpoint, sendTaskActivityAPNs } from "../taskActivities/index.js";
 import { WakeDelivery } from '../relay/wakeDelivery.js';
 
 const MAX_HTTP_BODY_BYTES = 40_000;
-const MAX_PUSH_BODY_BYTES = 4_096;
 const PAIR_TTL_MS = 15 * 60 * 1000;
 const MAX_ROOM_SOCKETS = 32;
 
@@ -41,6 +40,14 @@ export function createRelayServer(options = {}) {
   let capacity;
   const log = (event, fields) => { capacity?.log(event); return baseLog(event, fields); };
   const delivery = createSocketDelivery({ log });
+  const activities = new TaskActivityEndpoint({ registry: store.taskActivities,
+    configured: environment => apnsConfigured(env, environment),
+    send: async (device, update, now) => {
+      const result = await sendTaskActivityAPNs({ env, device, update, now,
+        request: options.pushRequest ?? nodeAPNsRequest });
+      log('relay.apns', { reason: result.ok ? 'activity-accepted' : result.stale ? 'stale-token' : 'activity-rejected' });
+      return result;
+    } });
   capacity = createRelayCapacity({store,sockets,delivery,env});
   store.metrics = capacity;
   const policy = { coolDowns: options.coolDowns ?? new CoolDownRegistry(), log };
@@ -59,7 +66,7 @@ export function createRelayServer(options = {}) {
         setClientDecision(response, d);
         if (!d.allowed) { response.setHeader('Retry-After', String(d.retryAfter || 5)); return sendJson(response, 429, { error: 'Client allowance reached', reason: d.reason }); }
       }
-      return routeHttp(request, response, store, env);
+      return routeHttp(request, response, store, env, activities);
     })().catch(() => sendJson(response, 500, { error: "internal error" }));
   });
 
@@ -174,7 +181,7 @@ export function createRelayServer(options = {}) {
   return server;
 }
 
-async function routeHttp(request, response, store, env) {
+async function routeHttp(request, response, store, env, activities) {
   const url = requestUrl(request);
   if (!url) return sendJson(response, 400, { error: "bad request" });
   if (url.pathname === "/health" && request.method === "GET") {
@@ -203,8 +210,15 @@ async function routeHttp(request, response, store, env) {
       } });
     return sendJson(response, result.status, result.body);
   }
+  if (url.pathname.startsWith('/push/activity/')) {
+    const room = url.searchParams.get('room');
+    const result = await activities.handle({ path: url.pathname, method: request.method, room,
+      authorize: () => authorize(store, room, bearer(request), false), read: limit => readJson(request, limit) });
+    return sendJson(response, result.status, result.body);
+  }
   if (url.pathname === "/push/register" || url.pathname === "/push/status") {
-    return handlePush(request, response, store, env, url);
+    return handlePushRegistration({ request, response, store, env, url,
+      authorize: (room, pin) => authorize(store, room, bearer(request), pin) });
   }
   return sendJson(response, 404, { error: "not found" });
 }
@@ -230,49 +244,6 @@ async function handlePairing(request, response, store, mailbox) {
   const stored = store.putPairing(mailbox, body, Date.now() + PAIR_TTL_MS);
   return stored ? sendJson(response, 200, { ok: true, expiresInSec: PAIR_TTL_MS / 1000 })
     : sendJson(response, 409, { error: "mailbox already occupied" });
-}
-
-async function handlePush(request, response, store, env, url) {
-  const room = url.searchParams.get("room");
-  if (!validRoom(room)) return sendJson(response, 400, { error: "valid room query parameter required" });
-  const pinAuth = url.pathname === "/push/register";
-  if (!authorize(store, room, bearer(request), pinAuth)) {
-    return sendJson(response, 401, { error: "invalid room credential" });
-  }
-  if (url.pathname === "/push/status") {
-    if (request.method !== "GET") return sendJson(response, 405, { error: "method not allowed" });
-    return sendJson(response, 200, { enabled: apnsConfigured(env), devices: store.pushTokens(room).length });
-  }
-  if (!["PUT", "POST", "DELETE"].includes(request.method)) {
-    return sendJson(response, 405, { error: "method not allowed" });
-  }
-  const body = await readJson(request, MAX_PUSH_BODY_BYTES);
-  const token = String(body?.token ?? "").toLowerCase();
-  if (!validDeviceToken(token)) return sendJson(response, 400, { error: "valid APNs token required" });
-  if (!["sandbox", "production"].includes(body.environment)) {
-    return sendJson(response, 400, { error: "environment must be sandbox or production" });
-  }
-  if (body.bundleId !== "com.ziborov.granttap") return sendJson(response, 400, { error: "unexpected bundle id" });
-  const tokens = store.updatePushToken(room, { token, environment: body.environment, bundleId: body.bundleId },
-    request.method === "DELETE");
-  return sendJson(response, 200, { ok: true, registered: request.method !== "DELETE",
-    enabled: apnsConfigured(env, body.environment), devices: tokens.length });
-}
-
-async function sendWakePush(store, room, env, request, log) {
-  if (!apnsConfigured(env)) return true;
-  const stale = [];
-  let ok = true;
-  await Promise.all(store.pushTokens(room).map(async (device) => {
-    try {
-      const result = await sendAPNs(env, device, request);
-      log('relay.apns', { reason: result.ok ? 'background-accepted' : result.stale ? 'stale-token' : 'background-rejected' });
-      if (result.stale) stale.push(device.token);
-      else if (!result.ok) ok = false;
-    } catch { ok = false; log('relay.apns', { reason: 'background-failed' }); }
-  }));
-  if (stale.length) store.removePushTokens(room, stale);
-  return ok;
 }
 
 function authorize(store, room, credential, pin = true) {

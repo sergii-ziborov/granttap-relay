@@ -1,4 +1,5 @@
 import { noteWorkerPresence } from "../roomPresence/worker.js";
+import { initializeRoomTaskActivities, handleRoomTaskActivities } from "../taskActivities/index.js";
 import { WorkerRetainedState } from "../retainedState/worker.js";
 import { initializeRoomTaskDispatch, handleRoomTaskDispatch, offerRoomTaskJobs,
   scheduleRoomTaskAlarm } from "../taskDispatch/worker-room.js";
@@ -30,6 +31,7 @@ export class GrantTapRoom {
     this.state = state;
     this.env = env;
     initializeRoomTaskDispatch(this);
+    initializeRoomTaskActivities(this);
     initializeRoomSocketPolicy(this);
     this.retainedState = new WorkerRetainedState(state.storage, () => state.storage.get("presence"));
     this.wakes = new WakeDelivery({ read: () => state.storage.get('push:wake'),
@@ -38,6 +40,7 @@ export class GrantTapRoom {
 
   async fetch(request) {
     const pathname = new URL(request.url).pathname;
+    if (pathname.startsWith('/push/activity/')) return handleRoomTaskActivities(this, request);
     if (pathname === "/task-jobs" || pathname.startsWith("/task-jobs/") || pathname.startsWith("/task-job-writers/") || pathname.startsWith("/task-resources/") || pathname.startsWith("/task-job-configurations/")) return handleRoomTaskDispatch(this, request);
     if (pathname === "/push/register") return this.handlePushRegistration(request);
     if (pathname === "/push/status") return this.handlePushStatus(request);

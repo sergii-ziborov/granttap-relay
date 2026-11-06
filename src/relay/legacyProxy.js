@@ -28,7 +28,7 @@ function allowedRequest(request, url) {
   if (PAIRING_PATH.test(url.pathname)) {
     return request.method === "GET" || request.method === "PUT" || request.method === "POST";
   }
-  if (PUSH_PATHS.has(url.pathname)) {
+  if (PUSH_PATHS.has(url.pathname) || url.pathname.startsWith('/push/activity/')) {
     return validRoom(url.searchParams.get("room"));
   }
   const websocket = (request.headers.get("Upgrade") ?? "").toLowerCase() === "websocket";

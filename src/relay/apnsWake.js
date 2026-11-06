@@ -22,6 +22,15 @@ export function pushPayload() {
   };
 }
 
+/** Shared signing boundary; callers select the APNs payload and push topic. */
+export async function apnsRequestContext(env, device) {
+  if (!apnsConfigured(env, device.environment)) throw new Error("APNs environment is not configured.");
+  const selected = apnsEnvironment(env, device.environment);
+  const token = await apnsProviderToken(selected);
+  const host = device.environment === "sandbox" ? "https://api.sandbox.push.apple.com" : "https://api.push.apple.com";
+  return { url: `${host}/3/device/${device.token}`, authorization: `bearer ${token}` };
+}
+
 export async function sendAPNs(env, device, request = fetch) {
   if (!apnsConfigured(env, device.environment)) throw new Error("APNs environment is not configured.");
   env = apnsEnvironment(env, device.environment);

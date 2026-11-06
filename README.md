@@ -175,6 +175,12 @@ docker compose up -d --build
 `deploy/nginx-relay.conf` is the production reverse-proxy template. It drops
 malformed unauthenticated traffic before Node, limits pairing and API requests,
 passes WebSocket upgrades, and leaves the ACME challenge path public.
+Its authenticated push routes include Live Activity registration, subscription
+discovery and updates. Before installing a changed template, exercise the real
+nginx binary against isolated ports and a synthetic upstream:
+`python3 deploy/test-nginx-routes.py deploy/nginx-relay.conf`.
+This check covers HTTP methods, room queries, existing routes and rejected
+unauthenticated or unknown paths without changing the running server.
 The Node service pings sockets every 30 s and drops peers that stop answering,
 well inside the template's `proxy_read_timeout 300s`; set `RELAY_HEARTBEAT_MS`
 (1000–120000, or `0` to disable) to change that. Policy closes use documented

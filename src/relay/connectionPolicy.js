@@ -1,3 +1,5 @@
+import { isDurableSubmission } from './submissionReceipts.js';
+
 /**
  * Connection policy shared by the Node relay and the Durable Object room.
  * Close reasons are a stable token, optionally followed by `; retry-after=<s>`.
@@ -29,10 +31,11 @@ export function admissionCloseToken(envelope) {
     ? "hub-admission-required" : "admission-required";
 }
 
-/** Only a genuinely oversize frame closes; expired or room-less reliable frames are dropped. */
-export function queueOutcome(result) {
+/** A submission rejected by storage keeps its control socket; protocol oversize still closes. */
+export function queueOutcome(result, deliveryId) {
   if (result === QUEUE_RESULT.STORED || result === QUEUE_RESULT.DUPLICATE) return { forward: true };
-  if (result === QUEUE_RESULT.OVERSIZE) return { close: "oversize" };
+  if (result === QUEUE_RESULT.OVERSIZE) return isDurableSubmission(deliveryId)
+    ? { drop: "oversize" } : { close: "oversize" };
   if (result === QUEUE_RESULT.FULL) return { drop: "full" };
   return { drop: result === QUEUE_RESULT.NO_ROOM ? "no-room" : "expired" };
 }

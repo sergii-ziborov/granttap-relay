@@ -54,7 +54,7 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake, 
     let stored;
     try { stored = store.enqueue(state.room, envelope.to, raw, envelope.deliveryId, envelope.expiresAt); }
     catch { return dropMessage(ws, envelope, 'storage-unavailable'); }
-    const outcome = queueOutcome(stored);
+    const outcome = queueOutcome(stored, envelope.deliveryId);
     if (outcome.close) return closeForPolicy(ws, outcome.close);
     if (outcome.drop) return dropMessage(ws, envelope, outcome.drop);
     if (state.relayControl && envelope.from === 'phone' && envelope.to === 'machine'

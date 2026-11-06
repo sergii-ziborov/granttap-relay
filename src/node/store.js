@@ -5,11 +5,10 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { NodeTaskDispatchStore } from "../taskDispatch/node.js";
 import { QUEUE_RESULT } from "../relay/connectionPolicy.js";
-import { retainSubmission } from "../relay/submissionReceipts.js";
+import { retainSubmission, submissionRetentionLimits } from "../relay/submissionReceipts.js";
 
 const DEFAULT_QUEUE_TTL_MS = 15 * 60 * 1000;
 const HOLD_LIMIT = 100;
-const MAX_QUEUE_BYTES = 1_800_000;
 const PUSH_TOKEN_LIMIT = 8;
 
 export class RelayStore {
@@ -85,13 +84,14 @@ export class RelayStore {
   enqueue(room, role, raw, deliveryId, expiresAt) {
     const started = performance.now();
     const rawBytes = Buffer.byteLength(raw);
-    if (rawBytes > MAX_QUEUE_BYTES) return QUEUE_RESULT.OVERSIZE;
+    const limits = submissionRetentionLimits(role, deliveryId);
+    if (rawBytes > limits.frameBytes) return QUEUE_RESULT.OVERSIZE;
     if (expiresAt != null && expiresAt <= Date.now()) return QUEUE_RESULT.EXPIRED;
     if (!this.room(room)) return QUEUE_RESULT.NO_ROOM;
     const queue = this.queue(room, role);
     if (queue.some((item) => item.deliveryId === deliveryId)) return QUEUE_RESULT.DUPLICATE;
     const retained = retainSubmission(queue, { raw, rawBytes, deliveryId,
-      queuedAt: Date.now(), expiresAt: expiresAt ?? Date.now() + DEFAULT_QUEUE_TTL_MS }, HOLD_LIMIT, MAX_QUEUE_BYTES);
+      queuedAt: Date.now(), expiresAt: expiresAt ?? Date.now() + DEFAULT_QUEUE_TTL_MS }, HOLD_LIMIT, limits.queueBytes);
     if (retained.result === QUEUE_RESULT.FULL) return QUEUE_RESULT.FULL;
     this.writeQueue(room, role, retained.rows);
     this.metrics?.record('receipts'); this.metrics?.timing('receipt', performance.now() - started);

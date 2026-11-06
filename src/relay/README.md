@@ -166,3 +166,16 @@ with 429 + `Retry-After`. The owner decides how hubs become admissible:
 Until a choice ships, the iOS app should stop retrying a link closed with
 4403/4406 (or refused with 429) for at least `Retry-After`, and surface the
 link as needing hub admission instead of reconnecting immediately.
+# Attachment submissions
+
+The Node relay retains explicit phone-to-computer submissions up to 22,010,000
+ciphertext bytes, with a 32,000,000-byte mailbox budget and the existing 100-row
+bound. This covers the native app's 11 MB attachment allowance after encoding
+and encryption. Already acknowledged submissions are never evicted to accept a
+new one. Ordinary snapshots retain their smaller budget.
+
+Worker storage retains its existing smaller queue limit. An explicit submission
+that exceeds a storage limit receives `relay.dropped` for its own delivery ID;
+the control connection stays available. A frame beyond the WebSocket protocol
+limit, abusive message rate or failed authorization still closes normally.
+

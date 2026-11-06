@@ -100,7 +100,7 @@ export class GrantTapRoom {
       let stored;
       try { stored = await this.queue(envelope.to, raw, envelope.deliveryId, envelope.expiresAt); }
       catch { return dropRoomMessage(this, ws, known, envelope, 'storage-unavailable'); }
-      const outcome = queueOutcome(stored);
+    const outcome = queueOutcome(stored, envelope.deliveryId);
       if (outcome.close) return closeRoomSocket(this, ws, { ...known, role: envelope.from }, outcome.close, envelope);
       if (outcome.drop) return dropRoomMessage(this, ws, { ...known, role: envelope.from }, envelope, outcome.drop);
       if (known.relayControl && envelope.from === 'phone' && envelope.to === 'machine'

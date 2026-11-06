@@ -1,5 +1,6 @@
 import { noteWorkerPresence } from "../roomPresence/worker.js";
 import { initializeRoomTaskActivities, handleRoomTaskActivities } from "../taskActivities/index.js";
+import { ingressCapabilities, noteIngressFrame } from '../ingressFlow/index.js';
 import { WorkerRetainedState } from "../retainedState/worker.js";
 import { initializeRoomTaskDispatch, handleRoomTaskDispatch, offerRoomTaskJobs,
   scheduleRoomTaskAlarm } from "../taskDispatch/worker-room.js";
@@ -59,12 +60,14 @@ export class GrantTapRoom {
     const cooling = coolingUpgradeResponse(this, room, recipientKeyId);
     if (cooling) return cooling;
     const relayControl = request.headers.get("X-GrantTap-Recipient-Routing") === "1";
+    const ingressFlow = relayControl && request.headers.get('X-GrantTap-Ingress-Flow') === '1';
     const pair = new WebSocketPair();
     this.state.acceptWebSocket(pair[1]);
-    pair[1].serializeAttachment({ room, ...(recipientKeyId ? { recipientKeyId } : {}),
+    pair[1].serializeAttachment({ room, ...(ingressFlow ? { ingressFlow } : {}), ...(recipientKeyId ? { recipientKeyId } : {}),
       ...(relayControl ? { relayControl } : {}), ...(request.headers.get("X-GrantTap-Presence") === "1" ? { presenceEnabled: true } : {}), taskDispatch: request.headers.get("X-GrantTap-Task-Dispatch") === "1" });
     if (relayControl) {
-      pair[1].send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true, retainedState: true, retainedStateGroups: true }));
+      pair[1].send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true,
+        retainedState: true, retainedStateGroups: true, ...ingressCapabilities(ingressFlow) }));
     }
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
@@ -76,6 +79,7 @@ export class GrantTapRoom {
     if (!acceptRoomFrame(this, ws)) return closeRoomSocket(this, ws, known, "rate-limit");
     let envelope;
     try { envelope = JSON.parse(raw); } catch { return; }
+    if (envelope?.type !== 'relay.admission') noteIngressFrame(known, frame => ws.send(frame), () => ws.serializeAttachment(known));
     if (envelope?.type === "relay.ack" && validIdentifier(envelope.deliveryId, 180)) {
       if (known.role) await this.acknowledge(known.role, envelope.deliveryId);
       return;

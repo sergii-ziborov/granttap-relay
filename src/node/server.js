@@ -23,6 +23,7 @@ import { createRelayCapacity } from './capacity/index.js';
 import { clientAccessFromEnv } from './hostwatch-client.mjs';
 import { clientIdentity, setClientDecision, trackClientConnection } from './client-access.js';
 import { TaskActivityEndpoint, sendTaskActivityAPNs } from "../taskActivities/index.js";
+import { ingressCapabilities } from '../ingressFlow/index.js';
 import { WakeDelivery } from '../relay/wakeDelivery.js';
 
 const MAX_HTTP_BODY_BYTES = 40_000;
@@ -121,6 +122,7 @@ export function createRelayServer(options = {}) {
     wss.handleUpgrade(request, socket, head, (ws) => {
       const capacityClosed=capacity.connected(ticket);ws.once('close', () => { capacity.record('connectionsClosed');if(ws.relayState?.capacityPolicyClose)capacity.record('policyCloses');capacityClosed?.(); });
       ws.relayState = { room, role: null, identity: managedCooldownIdentity(ticket), commercial: !!admission, ticket, policy, relayControl,
+        ingressFlow: relayControl && request.headers['x-granttap-ingress-flow'] === '1',
         windowStartedAt: Date.now(), windowMessages: 0, recipientKeyId, awaitingPong: false,
         presenceEnabled: request.headers["x-granttap-presence"] === "1",
         taskDispatch: request.headers["x-granttap-task-dispatch"] === "1" };
@@ -134,7 +136,8 @@ export function createRelayServer(options = {}) {
       sockets.set(room, roomSockets);
       wss.emit("connection", ws);
       if (relayControl) {
-        ws.send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true, retainedState: true, retainedStateGroups: true }));
+        ws.send(JSON.stringify({ type: "relay.capabilities", recipientRouting: true, taskDispatch: true,
+          retainedState: true, retainedStateGroups: true, ...ingressCapabilities(ws.relayState.ingressFlow) }));
       }
     });
   })().catch(() => socket.destroy()); });

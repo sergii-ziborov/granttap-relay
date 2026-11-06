@@ -8,6 +8,7 @@ import { envelopeProblem, validIdentifier } from "../relay/relayValidation.js";
 import { renewManagedConnection } from "./managed-connection.js";
 import { admittedSocket, closeForPolicy, refuseCoolingSocket } from "./socket-policy.js";
 import { isDurableSubmission, storedSubmissionNotice } from "../relay/submissionReceipts.js";
+import { noteIngressFrame } from '../ingressFlow/index.js';
 
 export const MAX_WEBSOCKET_MESSAGE_BYTES = 32 * 1024 * 1024;
 
@@ -21,6 +22,7 @@ export function handleSocketMessage(ws, raw, { store, sockets, admission, wake, 
   let envelope;
   try { envelope = JSON.parse(raw); } catch { return; }
   if (renewManagedConnection(ws, envelope, admission)) return;
+  noteIngressFrame(state, frame => ws.send(frame));
   if (envelope?.type === "relay.ack" && validIdentifier(envelope.deliveryId, 180)) {
     if (state.role) store.acknowledge(state.room, state.role, envelope.deliveryId);
     return;

@@ -7,13 +7,51 @@
 port or handing the relay your task content.**
 
 GrantTap Relay is the public, content-blind transport behind
-[GrantTap](https://granttap.com). It carries end-to-end encrypted messages
-between a local coding computer and authorized iPhone or iPad controllers,
-including bounded delivery while a device is offline. Apple Watch uses its
-paired iPhone. The relay routes and wakes; the devices decrypt and decide.
+[GrantTap](https://granttap.com), the live control center for the coding agents
+on your computer: approve, answer and steer Claude Code, Codex, Cursor and Grok
+Build from your phone. GrantTap for iPhone and iPad is a free download on the
+[App Store](https://apps.apple.com/app/id6809739366); Apple Watch is a companion
+to the iPhone app, and GrantTap for Mac is in TestFlight until Apple approves it.
+
+<a href="https://apps.apple.com/app/id6809739366"><img src="https://toolbox.marketingtools.apple.com/api/v2/badges/download-on-the-app-store/black/en-us" alt="Download GrantTap on the App Store" height="40"></a>
+
+The relay carries end-to-end encrypted messages between a local coding computer
+and authorized iPhone or iPad controllers, including bounded delivery while a
+device is offline. Apple Watch uses its paired iPhone. The relay routes and
+wakes; the devices decrypt and decide.
 
 For the full product journey, see the [GrantTap website](https://granttap.com)
 and its [illustrated journal](https://granttap.com/blog).
+
+## How the pieces fit
+
+- **GrantTap app** — where the person sees the work and decides: iPhone and iPad
+  on the App Store, Apple Watch through iPhone, Mac in TestFlight. Its Apple
+  client source is in [sergii-ziborov/granttap](https://github.com/sergii-ziborov/granttap).
+- **[GrantTap MCP](https://github.com/sergii-ziborov/granttap-mcp)** — the
+  runtime on the coding computer (`npm install -g granttap-mcp`, then
+  `granttap setup`). It reads the agents' sessions, enforces approvals in their
+  hooks and encrypts everything it sends through the relay.
+- **GrantTap Relay** (this repository) — joins the two without an inbound port,
+  holds ciphertext while a device sleeps and wakes the phone. It never holds a
+  decryption key.
+
+## What's new in the relay
+
+- **Encrypted task Live Activities.** Room-authenticated routes register a
+  phone's Live Activity and send its updates through APNs as a nonce and an
+  encrypted box; registrations expire within eight hours, at most eight per
+  room, and the production proxy template routes them.
+- **Silent, durable wakes.** A wake is a background push with no alert, sound or
+  task content, deduplicated per delivery and coalesced within a minute.
+- **Retained encrypted read state.** A returning phone gets its chat list, Mesh
+  and recent chat heads back while its computer is offline, from a bounded
+  cache of ciphertext kept at most seven days.
+- **Recipient routing.** Updated clients address ciphertext to the intended
+  controller, without changing room authorization or encryption.
+- **Bounded ingress.** Ingress reads are negotiated, and legitimate replay
+  acknowledgements are bounded apart from unsolicited traffic, without
+  weakening the relay's rate limits.
 
 The relay can run as a Cloudflare Worker with Durable Objects or as the included
 Node service with SQLite. Both runtimes route authenticated WebSockets by
@@ -25,8 +63,8 @@ locally.
 | --- | --- |
 | ![GrantTap Tasks on iPhone](docs/images/iphone-tasks.png) | ![GrantTap task queue on Apple Watch](docs/images/watch-tasks.png) |
 
-The screenshots are real deterministic Demo captures from the current GrantTap
-Personal UI. Demo content performs no command and contains no user data.
+The screenshots are real deterministic Demo captures of the GrantTap app.
+Demo content performs no command and contains no user data.
 
 ## Why the relay exists
 
@@ -262,14 +300,16 @@ GrantTap is not affiliated with Anthropic, OpenAI, Apple, or Cloudflare.
 
 ## Mac license and connection modes
 
-A purchased GrantTap Mac license includes running this relay for personal or
+A purchased GrantTap Mac license (Mac Local, a one-time purchase offered in the
+Mac app once it is on the Mac App Store) includes running this relay for personal or
 internal use under [LICENSE](LICENSE), without a Personal subscription. The Mac
 app can install a pinned relay revision through its separate MCP, start and stop
 it in Settings → Device network. Node 22+ is required. The local process binds
 only to loopback; supply a reachable TLS proxy or VPN. It does not configure NAT
 or install an APNs signing key. Restart it after a reboot when needed.
 
-Hosted delivery is the optional Personal subscription service. Direct mode uses
+Hosted delivery is the optional Personal subscription service, bought through
+Apple in GrantTap for iPhone and iPad. Direct mode uses
 `/endpoint` only for authenticated address discovery, then transports chat traffic
 to the configured endpoint. PUT/GET/DELETE require the room credential, with a
 64-character SHA-256 recipient identifier. The directory accepts only sealed

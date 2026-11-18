@@ -56,7 +56,7 @@ and its [illustrated journal](https://granttap.com/blog).
 The relay can run as a Cloudflare Worker with Durable Objects or as the included
 Node service with SQLite. Both runtimes route authenticated WebSockets by
 opaque room, retain bounded ciphertext for offline delivery, and can send a
-generic, task-content-free APNs alert so an iPhone reconnects and decrypts
+silent, task-content-free APNs wake so an iPhone reconnects and decrypts
 locally.
 
 | Task-first control on iPhone | Current tasks on Apple Watch |
@@ -99,10 +99,10 @@ The Worker does not provide:
 
 The relay is content-blind, not metadata-blind. It can see routing metadata:
 room, sender/recipient roles, IP addresses,
-timing, expiry, message sizes, and—when background delivery is enabled—an APNs
-device token plus its sandbox/production environment. It receives `nonce` and
-`box` as opaque ciphertext. The fixed APNs alert contains no command, prompt,
-path, session title, or message text.
+timing, expiry, message sizes, and—when background delivery or a task Live
+Activity is enabled—an APNs token plus its sandbox/production environment. It
+receives `nonce` and `box` as opaque ciphertext. The APNs wake contains no
+command, prompt, path, session title, or message text.
 
 The relay cannot decrypt commands, questions, agent messages, user replies, or
 approval decisions. Device and per-task secret keys are created locally and
@@ -130,9 +130,10 @@ official browser client uses the account service for subscription verification
 and a room- and controller-bound relay lease. Its encryption keys stay in browser
 storage, accessible to website code in that origin; the native apps provide
 stronger key isolation. The WebSocket and Durable Object path carries
-authenticated ciphertext. APNs
-receives only a fixed generic alert and neutral wake flag, never the encrypted
-envelope or its task metadata. One task key cannot decrypt a second task; a
+authenticated ciphertext. An APNs wake carries only `content-available` and a
+neutral wake flag, never the encrypted envelope or its task metadata; a task
+Live Activity update carries only a nonce and an encrypted box that the phone
+decrypts. One task key cannot decrypt a second task; a
 device can open that second task only if its independent key was explicitly
 granted to that device.
 
@@ -165,19 +166,24 @@ retry budget are delivered only to an already connected peer and are not stored
 for offline retry. Client attachment limits keep complete task frames under the
 separate 32 MiB WebSocket receive limit.
 
-The APNs payload is a generic time-sensitive alert with title `GrantTap`, the
-fixed body `An agent is waiting for an authenticated decision.`, default sound,
-`content-available: 1`, and `granttapWake: true`. It contains no task kind,
-request id, delivery id, prompt, command, session title, or path. Its background
-component asks iOS to pull and decrypt the queued E2EE envelope; the app can then
-present task-specific controls locally. Apple does not guarantee background
-execution timing, so queue retrieval is best-effort—not a promise of instant
-delivery.
+The APNs wake is a silent background push: `content-available: 1` and
+`granttapWake: true`, push type `background`, priority 5, with no alert, sound
+or badge. It contains no task kind, request id, delivery id, prompt, command,
+session title, or path. It asks iOS to let the app pull and decrypt the queued
+E2EE envelope; only the app, after decrypting, decides whether to show a
+notification. Wakes are deduplicated per delivery and coalesced within a minute;
+see [background wake delivery](src/relay/README.md#background-wake-delivery).
+Apple does not guarantee background execution timing and may throttle these
+pushes, so queue retrieval is best-effort—not a promise of instant delivery.
+
+A task Live Activity update is sent to APNs with push type `liveactivity`. Its
+content state is only a NaCl nonce and box that the phone decrypts, with a short
+stale date. See [task Live Activities](src/taskActivities/README.md).
 
 A Cloudflare account takeover or Durable Object database export therefore
 reveals only ciphertext plus operational metadata (opaque room/mailbox ids,
 routing roles, IPs, timing/expiry, sizes, APNs token/environment, and the
-neutral wake flag) plus the fixed generic alert text above. There is no
+neutral wake flag). There is no
 decryption key in Worker code, bindings, storage, logs, or encrypted Worker
 secrets. APNs provider credentials can sign notifications but cannot decrypt
 GrantTap traffic.
